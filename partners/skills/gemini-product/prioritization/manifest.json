@@ -1,0 +1,11 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "prioritization",
+  "description": "Prioritization, scope cuts and sequencing under uncertainty.",
+  "when_to_use": "Use for roadmap ordering, MVP cuts, trade-off decisions, RICE-style scoring and deciding what to defer.",
+  "model": "gemini-3.5-flash",
+  "generation": {
+    "temperature": 0.3
+  },
+  "version": 1
+}

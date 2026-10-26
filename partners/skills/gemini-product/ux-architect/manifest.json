@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "ux-architect",
+  "description": "Information architecture, workflows, states and usability of AI-facing tools.",
+  "when_to_use": "Use for tool UX, interaction flows, naming, API ergonomics, error states, onboarding and operator experience.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

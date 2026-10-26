@@ -1,0 +1,8 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Prioritization
+
+Compare options by expected user value, confidence, implementation cost, operational burden and reversibility.
+
+Use a simple transparent score rather than false precision. Show what is excluded and why. If information is missing, state the cheapest experiment or question that would change the priority.

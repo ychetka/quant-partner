@@ -1,0 +1,82 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "version": 1,
+  "partners": {
+    "gh-copilot-partner": {
+      "enabled": true,
+      "toolset": "code",
+      "backend": "copilot-direct",
+      "harness": "harness/gh-copilot-partner.txt",
+      "default_skill": "software-architect",
+      "auth": {
+        "github_oauth_token": "GITHUB_OAUTH_TOKEN_HERE"
+      },
+      "options": {
+        "copilot": {
+          "integration_id": "vscode-chat",
+          "api": "auto",
+          "editor_version": "vscode/1.104.1",
+          "editor_plugin_version": "copilot-chat/0.30.0",
+          "user_agent": "GitHubCopilotChat/0.1"
+        }
+      },
+      "model": "claude-sonnet-5",
+      "fallback_models": [
+        "claude-sonnet-5.5",
+        "gpt-5.3-codex"
+      ],
+      "generation": {
+        "temperature": 0.2,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    },
+    "gemini-product": {
+      "enabled": true,
+      "toolset": "product",
+      "backend": "gemini",
+      "harness": "harness/gemini-product.txt",
+      "default_skill": "product-manager",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.4,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    },
+    "local-openai-partner": {
+      "enabled": false,
+      "toolset": "code",
+      "backend": "openai-compatible",
+      "harness": "harness/gh-copilot-partner.txt",
+      "default_skill": "software-architect",
+      "auth": {
+        "api_key": "OPTIONAL_API_KEY_HERE"
+      },
+      "options": {
+        "openai": {
+          "base_url": "http://127.0.0.1:4141/v1"
+        }
+      },
+      "model": "claude-sonnet-5",
+      "generation": {
+        "temperature": 0.2,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    }
+  }
+}

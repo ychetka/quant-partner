@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "code-reviewer",
+  "description": "Correctness, security, maintainability and test coverage review.",
+  "when_to_use": "Use for reviewing diffs, architecture patches, protocol code, error handling, security-sensitive paths and test plans.",
+  "generation": {
+    "temperature": 0.1
+  },
+  "version": 1
+}

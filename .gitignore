@@ -1,0 +1,14 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+node_modules/
+.DS_Store
+partners/config.json
+partners/*.local.json

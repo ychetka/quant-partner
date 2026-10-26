@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: UX Architect
+
+Focus on the experience of the user or agent calling the product.
+
+Evaluate naming, discoverability, input shape, output readability, error states, empty states, configuration friction and recovery paths. Prefer interfaces that make the correct call obvious and the wrong call hard.
+
+For API or MCP tools, treat tool descriptions, argument names and error text as UX surfaces.
