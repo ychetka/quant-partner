@@ -11,6 +11,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partners"))
 
+from core.config import load_skill  # noqa: E402
 from core.errors import PartnerError, sanitize  # noqa: E402
 from core.server import PartnerMCPServer  # noqa: E402
 
@@ -56,6 +57,21 @@ class ServerTest(unittest.TestCase):
         server = PartnerMCPServer("gh-copilot-partner")
         with self.assertRaises(PartnerError) as ctx:
             server.call_tool("ask_code_partner", {})
+        self.assertEqual(ctx.exception.code, "invalid_request")
+
+    def test_explicit_role_beats_skill_model(self):
+        server = PartnerMCPServer("gemini-product")
+        cfg = server._cfg()
+        skill = load_skill(cfg, "prioritization")
+        models = server._candidate_models(cfg, skill, {"role": "default"})
+        self.assertEqual(models[0], "gemini-4-argon")
+
+    def test_unknown_role_is_invalid_request(self):
+        server = PartnerMCPServer("gemini-product")
+        cfg = server._cfg()
+        skill = load_skill(cfg, "product-manager")
+        with self.assertRaises(PartnerError) as ctx:
+            server._candidate_models(cfg, skill, {"role": "missing"})
         self.assertEqual(ctx.exception.code, "invalid_request")
 
     def test_secret_sanitizer(self):

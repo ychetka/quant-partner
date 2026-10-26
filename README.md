@@ -116,6 +116,8 @@ Dialog tools are stateless: pass the whole message history in each call.
 
 Prompt composition order: base harness, skill prompt, then the caller's question context. `skill` can be passed per tool call; otherwise `default_skill` from the config is used.
 
+Set `skills_root` in a partner config to share a skill directory across partner IDs. The example `local-openai-partner` reuses `skills/gh-copilot-partner`.
+
 ## Error contract
 
 Tool errors are returned as text in the MCP result:
@@ -155,6 +157,8 @@ PARTNER_ID=gemini-product \
 PARTNER_CONFIG=partners/config.json \
 python3 tools/mcp_smoke.py --call ask_product_partner --question 'Say OK.'
 ```
+
+The smoke client exits nonzero when the server returns a JSON-RPC error or a tool result with `isError`.
 
 ## Notes
 

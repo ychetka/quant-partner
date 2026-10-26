@@ -64,8 +64,8 @@ def handle_message(server: ToolServer, msg: dict[str, Any]) -> None:
             text = sanitize(e.to_text(), server.secrets())
             _result(rid, {"isError": True, "content": [{"type": "text", "text": text}]})
         except Exception as e:
-            log(f"internal error in {name}: {e}")
-            text = sanitize(f"ERROR internal_error: {e}", server.secrets())
+            log(f"internal error in {name}: {type(e).__name__}")
+            text = "ERROR internal_error: partner backend failed; check server logs"
             _result(rid, {"isError": True, "content": [{"type": "text", "text": text}]})
     elif rid is not None:
         _error(rid, -32601, f"unsupported method {method}")

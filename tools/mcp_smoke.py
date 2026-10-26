@@ -61,11 +61,16 @@ def main() -> int:
         env=env,
         timeout=600,
     )
+    failed = False
     for line in proc.stdout.splitlines():
-        print(json.dumps(json.loads(line), ensure_ascii=False, indent=2))
+        message = json.loads(line)
+        print(json.dumps(message, ensure_ascii=False, indent=2))
+        result = message.get("result")
+        if message.get("error") or (isinstance(result, dict) and result.get("isError")):
+            failed = True
     if proc.stderr:
         print(proc.stderr, file=sys.stderr, end="")
-    return proc.returncode
+    return 1 if failed else proc.returncode
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ class PartnerConfig:
     enabled: bool
     harness_path: Path
     default_skill: str
+    skills_root: str
     auth: dict[str, Any]
     options: dict[str, Any]
     model: str
@@ -105,6 +106,13 @@ def _string_list(value: Any, name: str) -> list[str]:
     return list(value)
 
 
+def _safe_relative_path(value: str, name: str) -> str:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise invalid_config(f"{name} must be a relative path inside partners/")
+    return str(path)
+
+
 def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerConfig:
     path = path or config_path()
     if not partner_id:
@@ -119,6 +127,7 @@ def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerCon
     except json.JSONDecodeError as e:
         raise invalid_config(f"config file is not valid JSON: {e}") from e
 
+    data = _expect_mapping(data, "config root")
     partners = _expect_mapping(data.get("partners"), "partners")
     raw = _expect_mapping(partners.get(partner_id), f"partners.{partner_id}")
     enabled = bool(raw.get("enabled", True))
@@ -126,8 +135,12 @@ def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerCon
         raise invalid_config(f"partner is disabled: {partner_id}")
     backend = _expect_string(raw.get("backend"), "backend")
     toolset = _expect_string(raw.get("toolset"), "toolset")
-    harness = _expect_string(raw.get("harness"), "harness")
+    harness = _safe_relative_path(_expect_string(raw.get("harness"), "harness"), "harness")
     default_skill = _expect_string(raw.get("default_skill"), "default_skill")
+    skills_root_raw = raw.get("skills_root", "")
+    if not isinstance(skills_root_raw, str):
+        raise invalid_config("skills_root must be a string")
+    skills_root = _safe_relative_path(skills_root_raw, "skills_root") if skills_root_raw else ""
     auth = _expect_mapping(raw.get("auth"), "auth")
     generation = _expect_mapping(raw.get("generation", {}), "generation")
     models = _expect_mapping(raw.get("models", {}), "models")
@@ -143,6 +156,7 @@ def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerCon
         enabled=enabled,
         harness_path=(PACKAGE_ROOT / harness).resolve(),
         default_skill=default_skill,
+        skills_root=skills_root,
         auth=auth,
         options=options,
         model=_expect_string(raw.get("model"), "model", ""),
@@ -182,6 +196,8 @@ def load_harness(cfg: PartnerConfig) -> str:
 
 
 def _skills_root(cfg: PartnerConfig) -> Path:
+    if cfg.skills_root:
+        return cfg.package_root / cfg.skills_root
     return cfg.package_root / "skills" / cfg.partner_id
 
 
@@ -194,9 +210,10 @@ def _safe_skill_name(name: str) -> str:
 
 def _load_manifest(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise invalid_config(f"cannot load skill manifest {path}: {e}") from e
+    return _expect_mapping(manifest, f"skill manifest {path}")
 
 
 def list_skills(cfg: PartnerConfig) -> list[Skill]:

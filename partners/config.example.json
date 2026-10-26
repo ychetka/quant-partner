@@ -63,6 +63,7 @@
       "backend": "openai-compatible",
       "harness": "harness/gh-copilot-partner.txt",
       "default_skill": "software-architect",
+      "skills_root": "skills/gh-copilot-partner",
       "auth": {
         "api_key": "OPTIONAL_API_KEY_HERE"
       },

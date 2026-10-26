@@ -90,9 +90,9 @@ class CopilotDirectBackend:
         }
 
     def _model_entries(self) -> list[dict[str, Any]]:
+        api_base, session = self._session()
         if self._models_cache is not None:
             return self._models_cache
-        api_base, session = self._session()
         out = get_json(
             f"{api_base}/models",
             headers=self._headers(session),

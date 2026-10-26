@@ -8,8 +8,34 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 from .errors import PartnerError, sanitize
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Allow only same-origin redirects so credentials never cross hosts."""
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int]:
+        parsed = urlsplit(url)
+        scheme = parsed.scheme.lower()
+        default_port = 443 if scheme == "https" else 80
+        return scheme, (parsed.hostname or "").lower(), parsed.port or default_port
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        newurl = urljoin(req.full_url, newurl)
+        old_origin = self._origin(req.full_url)
+        new_origin = self._origin(newurl)
+        if old_origin != new_origin:
+            raise PartnerError(
+                "partner_unreachable",
+                f"unsafe cross-origin redirect rejected: {old_origin[1]} to {new_origin[1]}",
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_SafeRedirectHandler())
 
 
 def _error_code(status: int, body: str) -> str:
@@ -53,10 +79,14 @@ def request_json(
     secrets: list[str] | tuple[str, ...] = (),
 ) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
+        req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+        with _OPENER.open(req, timeout=timeout) as res:
             return json.loads(res.read() or b"{}")
+    except PartnerError:
+        raise
+    except (ValueError, UnicodeError) as e:
+        raise PartnerError("invalid_config", "invalid HTTP request header or URL value") from e
     except urllib.error.HTTPError as e:
         raw = e.read()
         message = sanitize(_extract_message(raw, e.code), secrets)

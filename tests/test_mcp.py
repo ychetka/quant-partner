@@ -29,11 +29,19 @@ class DummyServer:
         return []
 
 
+class LeakyServer(DummyServer):
+    def call_tool(self, name, arguments):
+        raise ValueError("Authorization: Bearer secret\\n")
+
+    def secrets(self):
+        return ["secret\n"]
+
+
 class McpProtocolTest(unittest.TestCase):
-    def _handle(self, message):
+    def _handle(self, message, server=None):
         stream = io.StringIO()
         with patch.object(sys, "stdout", stream):
-            handle_message(DummyServer(), message)
+            handle_message(server or DummyServer(), message)
         return [json.loads(line) for line in stream.getvalue().splitlines()]
 
     def test_non_dict_frame_is_ignored(self):
@@ -48,6 +56,19 @@ class McpProtocolTest(unittest.TestCase):
         result = out[0]["result"]
         self.assertTrue(result["isError"])
         self.assertIn("ERROR invalid_request", result["content"][0]["text"])
+
+    def test_internal_error_does_not_leak_exception_text(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            handle_message(
+                LeakyServer(),
+                {"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "x", "arguments": {}}},
+            )
+        output = stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn("Authorization", output)
+        self.assertNotIn("secret", output)
+        self.assertIn("internal_error", stdout.getvalue())
 
 
 if __name__ == "__main__":

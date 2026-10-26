@@ -190,7 +190,10 @@ class PartnerMCPServer:
     def _candidate_models(self, cfg: PartnerConfig, skill: Skill, args: dict[str, Any]) -> list[str]:
         explicit = str(args.get("model") or "")
         role = str(args.get("role") or "")
-        primary = explicit or skill.model or cfg.default_model(role) or cfg.model
+        if role and role not in cfg.models:
+            raise PartnerError("invalid_request", f"unknown model role: {role}")
+        role_model = cfg.default_model(role) if role else ""
+        primary = explicit or role_model or skill.model or cfg.default_model() or cfg.model
         candidates = [primary]
         candidates.extend(skill.fallback_models)
         candidates.extend(cfg.model_fallbacks())

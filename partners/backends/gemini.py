@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import socket
 from typing import Any
+from urllib.parse import urlencode
 
 from core.errors import PartnerError, invalid_config
 from core.http import get_json, post_json
@@ -48,10 +49,18 @@ class GeminiBackend:
 
     def list_models(self) -> list[str]:
         self._require_key()
-        out = get_json(f"{API_ROOT}/models", headers=self._headers(), timeout=self.timeout, secrets=self.secrets)
+        models = []
+        page_token = ""
+        for _ in range(100):
+            query = f"?{urlencode({'pageToken': page_token})}" if page_token else ""
+            out = get_json(f"{API_ROOT}/models{query}", headers=self._headers(), timeout=self.timeout, secrets=self.secrets)
+            models.extend(out.get("models", []))
+            page_token = str(out.get("nextPageToken") or "")
+            if not page_token:
+                break
         return sorted(
             str(model.get("name", "")).removeprefix("models/")
-            for model in out.get("models", [])
+            for model in models
             if model.get("name")
         )
 
