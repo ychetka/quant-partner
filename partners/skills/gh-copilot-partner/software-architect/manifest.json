@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "software-architect",
+  "description": "Architecture, module boundaries, stack choices and engineering trade-offs.",
+  "when_to_use": "Use for system design, service decomposition, data flow, backend/frontend boundaries and architecture review.",
+  "generation": {
+    "temperature": 0.2
+  },
+  "version": 1
+}

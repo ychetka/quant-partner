@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "product-manager",
+  "description": "Product framing, user value, MVP scope, roadmap and success metrics.",
+  "when_to_use": "Use for product requirements, feature evaluation, MVP cuts, user journeys, roadmap and value hypothesis.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

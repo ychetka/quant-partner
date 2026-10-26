@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "polyglot-developer",
+  "description": "Practical implementation guidance across Python, TypeScript, Go, shell and common backend stacks.",
+  "when_to_use": "Use for implementation planning, dependency choice, code structure, refactoring steps and language-specific trade-offs.",
+  "generation": {
+    "temperature": 0.2
+  },
+  "version": 1
+}
