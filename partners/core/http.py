@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Small JSON-over-HTTP helpers built on Python stdlib."""
+
 from __future__ import annotations
 
 import json

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Generic OpenAI-compatible backend."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -30,7 +31,12 @@ class OpenAICompatibleBackend:
 
     def list_models(self) -> list[str]:
         self._require_base()
-        out = get_json(f"{self.base_url}/models", headers=self._headers(), timeout=self.timeout, secrets=self.secrets)
+        out = get_json(
+            f"{self.base_url}/models",
+            headers=self._headers(),
+            timeout=self.timeout,
+            secrets=self.secrets,
+        )
         return sorted(str(model.get("id", "")) for model in out.get("data", []) if model.get("id"))
 
     def complete(
@@ -44,7 +50,10 @@ class OpenAICompatibleBackend:
         self._require_base()
         wire = [{"role": "system", "content": system_prompt}] if system_prompt else []
         wire += [
-            {"role": "assistant" if m.get("role") in ("assistant", "model") else "user", "content": m.get("content", "")}
+            {
+                "role": "assistant" if m.get("role") in ("assistant", "model") else "user",
+                "content": m.get("content", ""),
+            }
             for m in messages
         ]
         out = post_json(
@@ -65,5 +74,7 @@ class OpenAICompatibleBackend:
             raise PartnerError("backend_error", "OpenAI-compatible backend returned no choices")
         text = str(((choices[0].get("message") or {}).get("content")) or "").strip()
         if not text:
-            raise PartnerError("backend_error", "OpenAI-compatible backend returned an empty response")
+            raise PartnerError(
+                "backend_error", "OpenAI-compatible backend returned an empty response"
+            )
         return text

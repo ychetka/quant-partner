@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Local JSON-RPC smoke client for quant-partner MCP servers."""
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,12 @@ def main() -> int:
     env.setdefault("PARTNER_CONFIG", str(ROOT / "partners" / "config.json"))
 
     requests = [
-        {"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": {"protocolVersion": "2024-11-05"}},
+        {
+            "jsonrpc": "2.0",
+            "id": "init",
+            "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05"},
+        },
     ]
     if args.list or not args.call:
         requests.append({"jsonrpc": "2.0", "id": "tools", "method": "tools/list"})
@@ -46,12 +52,14 @@ def main() -> int:
             arguments["model"] = args.model
         if args.role:
             arguments["role"] = args.role
-        requests.append({
-            "jsonrpc": "2.0",
-            "id": "call",
-            "method": "tools/call",
-            "params": {"name": args.call, "arguments": arguments},
-        })
+        requests.append(
+            {
+                "jsonrpc": "2.0",
+                "id": "call",
+                "method": "tools/call",
+                "params": {"name": args.call, "arguments": arguments},
+            }
+        )
 
     proc = subprocess.run(
         [sys.executable, str(SERVER)],

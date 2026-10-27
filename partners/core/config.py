@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Partner JSON config, harness and pluggable skill loading."""
+
 from __future__ import annotations
 
 import json

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Partner-aware MCP tool dispatch."""
+
 from __future__ import annotations
 
 import json
@@ -84,7 +85,10 @@ class PartnerMCPServer:
         return [
             {
                 "name": "partner_info",
-                "description": "Show partner backend, default model, active skill and auth status without exposing secrets.",
+                "description": (
+                    "Show partner backend, default model, active skill and auth status "
+                    "without exposing secrets."
+                ),
                 "inputSchema": {"type": "object", "properties": {}},
             },
             {
@@ -99,18 +103,26 @@ class PartnerMCPServer:
             },
             {
                 "name": ask,
-                "description": "Ask this partner a single stateless question. Pass enough context; there is no memory between calls.",
+                "description": (
+                    "Ask this partner a single stateless question. Pass enough context; "
+                    "there is no memory between calls."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "question": self._string_arg("Question, hypothesis or review request"),
-                        "context": self._string_arg("Relevant architecture, constraints, snippets and prior findings"),
+                        "context": self._string_arg(
+                            "Relevant architecture, constraints, snippets and prior findings"
+                        ),
                         "files": {
                             "type": "array",
                             "description": "Optional file excerpts: [{name, content}]",
                             "items": {
                                 "type": "object",
-                                "properties": {"name": {"type": "string"}, "content": {"type": "string"}},
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "content": {"type": "string"},
+                                },
                                 "required": ["name", "content"],
                             },
                         },
@@ -121,7 +133,10 @@ class PartnerMCPServer:
             },
             {
                 "name": dialog,
-                "description": "Continue a partner dialog with message history [{role:'user'|'assistant'|'model', text:'...'}].",
+                "description": (
+                    "Continue a partner dialog with message history "
+                    "[{role:'user'|'assistant'|'model', text:'...'}]."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -130,7 +145,10 @@ class PartnerMCPServer:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "role": {"type": "string", "enum": ["user", "assistant", "model"]},
+                                    "role": {
+                                        "type": "string",
+                                        "enum": ["user", "assistant", "model"],
+                                    },
                                     "text": {"type": "string"},
                                 },
                                 "required": ["role", "text"],
@@ -187,7 +205,9 @@ class PartnerMCPServer:
                 parts.append(f"## File: {name}\n```\n{content}\n```")
         return "\n\n".join(parts)
 
-    def _candidate_models(self, cfg: PartnerConfig, skill: Skill, args: dict[str, Any]) -> list[str]:
+    def _candidate_models(
+        self, cfg: PartnerConfig, skill: Skill, args: dict[str, Any]
+    ) -> list[str]:
         explicit = str(args.get("model") or "")
         role = str(args.get("role") or "")
         if role and role not in cfg.models:
@@ -248,7 +268,9 @@ class PartnerMCPServer:
             role = str(item.get("role") or "")
             text = str(item.get("text") or item.get("content") or "")
             if role not in ("user", "assistant", "model") or not text:
-                raise PartnerError("invalid_request", "messages require role user|assistant|model and text")
+                raise PartnerError(
+                    "invalid_request", "messages require role user|assistant|model and text"
+                )
             messages.append({"role": "assistant" if role == "model" else role, "content": text})
         return self._complete(messages, args)
 

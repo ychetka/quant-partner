@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Direct GitHub Copilot backend with OAuth token exchange."""
+
 from __future__ import annotations
 
 import threading
@@ -23,7 +24,9 @@ class CopilotDirectBackend:
         self.integration_id = str(copilot.get("integration_id", "vscode-chat"))
         self.api_mode = str(copilot.get("api", "auto"))
         self.editor_version = str(copilot.get("editor_version", "vscode/1.104.1"))
-        self.editor_plugin_version = str(copilot.get("editor_plugin_version", "copilot-chat/0.30.0"))
+        self.editor_plugin_version = str(
+            copilot.get("editor_plugin_version", "copilot-chat/0.30.0")
+        )
         self.user_agent = str(copilot.get("user_agent", "GitHubCopilotChat/0.1"))
         self._lock = threading.Lock()
         self._session_token = ""
@@ -60,11 +63,19 @@ class CopilotDirectBackend:
         except (TypeError, ValueError):
             expires = time.time() + 1500
         endpoints = out.get("endpoints") if isinstance(out.get("endpoints"), dict) else {}
-        api_base = str(endpoints.get("api") or out.get("api_endpoint") or "https://api.githubcopilot.com").rstrip("/")
+        api_base = str(
+            endpoints.get("api") or out.get("api_endpoint") or "https://api.githubcopilot.com"
+        ).rstrip("/")
         parsed = urlsplit(api_base)
         host = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or not (host == "api.githubcopilot.com" or host.endswith(".githubcopilot.com")):
-            raise PartnerError("backend_error", f"Copilot token exchange returned an untrusted api_base: {parsed.hostname or api_base}")
+        if parsed.scheme != "https" or not (
+            host == "api.githubcopilot.com" or host.endswith(".githubcopilot.com")
+        ):
+            raise PartnerError(
+                "backend_error",
+                "Copilot token exchange returned an untrusted api_base: "
+                f"{parsed.hostname or api_base}",
+            )
         self._session_token = token
         self._session_expires_at = expires
         self._api_base = api_base
@@ -74,7 +85,11 @@ class CopilotDirectBackend:
 
     def _session(self, force_refresh: bool = False) -> tuple[str, str]:
         with self._lock:
-            if force_refresh or not self._session_token or time.time() >= self._session_expires_at - 60:
+            if (
+                force_refresh
+                or not self._session_token
+                or time.time() >= self._session_expires_at - 60
+            ):
                 self._exchange()
             return self._api_base, self._session_token
 
@@ -128,10 +143,19 @@ class CopilotDirectBackend:
             return True
         return False
 
-    def _chat_payload(self, messages: list[dict[str, str]], system_prompt: str, model: str, generation: dict[str, Any]) -> dict[str, Any]:
+    def _chat_payload(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+    ) -> dict[str, Any]:
         wire = [{"role": "system", "content": system_prompt}] if system_prompt else []
         wire += [
-            {"role": "assistant" if m.get("role") in ("assistant", "model") else "user", "content": m.get("content", "")}
+            {
+                "role": "assistant" if m.get("role") in ("assistant", "model") else "user",
+                "content": m.get("content", ""),
+            }
             for m in messages
         ]
         return {
@@ -142,9 +166,18 @@ class CopilotDirectBackend:
             "max_tokens": generation.get("max_tokens", 8192),
         }
 
-    def _responses_payload(self, messages: list[dict[str, str]], system_prompt: str, model: str, generation: dict[str, Any]) -> dict[str, Any]:
+    def _responses_payload(
+        self,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+    ) -> dict[str, Any]:
         wire = [
-            {"role": "assistant" if m.get("role") in ("assistant", "model") else "user", "content": m.get("content", "")}
+            {
+                "role": "assistant" if m.get("role") in ("assistant", "model") else "user",
+                "content": m.get("content", ""),
+            }
             for m in messages
         ]
         payload: dict[str, Any] = {"model": model, "input": wire}
@@ -173,7 +206,15 @@ class CopilotDirectBackend:
                     parts.append(str(content.get("text", "")))
         return "".join(parts).strip()
 
-    def _complete_once(self, endpoint: str, messages: list[dict[str, str]], system_prompt: str, model: str, generation: dict[str, Any], force_refresh: bool = False) -> str:
+    def _complete_once(
+        self,
+        endpoint: str,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+        force_refresh: bool = False,
+    ) -> str:
         api_base, session = self._session(force_refresh)
         if endpoint == "responses":
             payload = self._responses_payload(messages, system_prompt, model, generation)
@@ -188,13 +229,22 @@ class CopilotDirectBackend:
         )
         return self._responses_text(out) if endpoint == "responses" else self._chat_text(out)
 
-    def _complete_with_auth_retry(self, endpoint: str, messages: list[dict[str, str]], system_prompt: str, model: str, generation: dict[str, Any]) -> str:
+    def _complete_with_auth_retry(
+        self,
+        endpoint: str,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+    ) -> str:
         try:
             return self._complete_once(endpoint, messages, system_prompt, model, generation)
         except PartnerError as e:
             if e.code != "unauthorized":
                 raise
-            return self._complete_once(endpoint, messages, system_prompt, model, generation, force_refresh=True)
+            return self._complete_once(
+                endpoint, messages, system_prompt, model, generation, force_refresh=True
+            )
 
     def complete(
         self,
@@ -220,13 +270,25 @@ class CopilotDirectBackend:
         endpoint = "chat/completions"
         if self.api_mode == "responses":
             endpoint = "responses"
-        elif self.api_mode == "auto" and not self._supports(model, "chat/completions") and self._supports(model, "responses"):
+        elif (
+            self.api_mode == "auto"
+            and not self._supports(model, "chat/completions")
+            and self._supports(model, "responses")
+        ):
             endpoint = "responses"
         try:
-            text = self._complete_with_auth_retry(endpoint, messages, system_prompt, model, generation)
+            text = self._complete_with_auth_retry(
+                endpoint, messages, system_prompt, model, generation
+            )
         except PartnerError as e:
-            if self.api_mode == "auto" and endpoint == "chat/completions" and e.code in ("unsupported_api_for_model", "backend_error"):
-                text = self._complete_with_auth_retry("responses", messages, system_prompt, model, generation)
+            if (
+                self.api_mode == "auto"
+                and endpoint == "chat/completions"
+                and e.code in ("unsupported_api_for_model", "backend_error")
+            ):
+                text = self._complete_with_auth_retry(
+                    "responses", messages, system_prompt, model, generation
+                )
             else:
                 raise
         if not text:

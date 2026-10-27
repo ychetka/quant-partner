@@ -18,7 +18,9 @@ from core.server import PartnerMCPServer  # noqa: E402
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {"PARTNER_CONFIG": str(ROOT / "partners" / "config.example.json")})
+        self.env = patch.dict(
+            os.environ, {"PARTNER_CONFIG": str(ROOT / "partners" / "config.example.json")}
+        )
         self.env.start()
 
     def tearDown(self):

@@ -48,11 +48,15 @@ class McpProtocolTest(unittest.TestCase):
         self.assertEqual(self._handle([]), [])
 
     def test_initialize_with_bad_params(self):
-        out = self._handle({"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": "bad"})
+        out = self._handle(
+            {"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": "bad"}
+        )
         self.assertEqual(out[0]["result"]["serverInfo"]["name"], "dummy")
 
     def test_tools_call_with_bad_params_returns_tool_error(self):
-        out = self._handle({"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": "bad"})
+        out = self._handle(
+            {"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": "bad"}
+        )
         result = out[0]["result"]
         self.assertTrue(result["isError"])
         self.assertIn("ERROR invalid_request", result["content"][0]["text"])
@@ -63,7 +67,12 @@ class McpProtocolTest(unittest.TestCase):
         with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
             handle_message(
                 LeakyServer(),
-                {"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "x", "arguments": {}}},
+                {
+                    "jsonrpc": "2.0",
+                    "id": "call",
+                    "method": "tools/call",
+                    "params": {"name": "x", "arguments": {}},
+                },
             )
         output = stdout.getvalue() + stderr.getvalue()
         self.assertNotIn("Authorization", output)

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Backend interface used by the MCP server."""
+
 from __future__ import annotations
 
 from typing import Any, Protocol
