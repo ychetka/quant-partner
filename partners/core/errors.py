@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Shared error types and safe error formatting for partner tools."""
+
 from __future__ import annotations
 
 

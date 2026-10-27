@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Universal quant-partner MCP stdio entrypoint."""
+
 from __future__ import annotations
 
 import os

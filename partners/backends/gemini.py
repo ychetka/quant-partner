@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Gemini REST backend."""
+
 from __future__ import annotations
 
 import socket
@@ -53,7 +54,12 @@ class GeminiBackend:
         page_token = ""
         for _ in range(100):
             query = f"?{urlencode({'pageToken': page_token})}" if page_token else ""
-            out = get_json(f"{API_ROOT}/models{query}", headers=self._headers(), timeout=self.timeout, secrets=self.secrets)
+            out = get_json(
+                f"{API_ROOT}/models{query}",
+                headers=self._headers(),
+                timeout=self.timeout,
+                secrets=self.secrets,
+            )
             models.extend(out.get("models", []))
             page_token = str(out.get("nextPageToken") or "")
             if not page_token:
@@ -103,6 +109,10 @@ class GeminiBackend:
         parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
         text = "".join(str(part.get("text", "")) for part in parts).strip()
         if not text:
-            reason = candidates[0].get("finishReason", "empty response") if candidates else "no candidates"
+            reason = (
+                candidates[0].get("finishReason", "empty response")
+                if candidates
+                else "no candidates"
+            )
             raise PartnerError("backend_error", f"Gemini returned an empty response ({reason})")
         return text

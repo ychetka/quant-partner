@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 """Newline-delimited JSON-RPC transport for MCP stdio servers."""
+
 from __future__ import annotations
 
 import json
@@ -43,11 +44,14 @@ def handle_message(server: ToolServer, msg: dict[str, Any]) -> None:
     method = str(msg.get("method", ""))
     params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
     if method == "initialize":
-        _result(rid, {
-            "protocolVersion": params.get("protocolVersion", "2024-11-05"),
-            "capabilities": {"tools": {}},
-            "serverInfo": server.server_info(),
-        })
+        _result(
+            rid,
+            {
+                "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+                "capabilities": {"tools": {}},
+                "serverInfo": server.server_info(),
+            },
+        )
     elif method in ("notifications/initialized", "initialized"):
         return
     elif method == "ping":
