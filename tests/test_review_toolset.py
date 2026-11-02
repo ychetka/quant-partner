@@ -549,7 +549,8 @@ class ReviewToolsetTest(unittest.TestCase):
         self.assertIn("here is my review, no json", retry_prompt)
         self.assertIn("invalid_json", retry_prompt)
         match = re.search(r"<<<PREVIOUS_OUTPUT_([0-9a-f]{16})>>>", retry_prompt)
-        self.assertIsNotNone(match, retry_prompt)
+        if match is None:
+            self.fail(f"no PREVIOUS_OUTPUT nonce marker in retry prompt: {retry_prompt}")
         self.assertEqual(retry_prompt.count(f"<<<END_PREVIOUS_OUTPUT_{match.group(1)}>>>"), 1)
         records = self._log_records()
         self.assertEqual(len(records), 1)

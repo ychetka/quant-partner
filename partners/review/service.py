@@ -46,7 +46,7 @@ from .scan import scan_for_secrets
 # ``prompt_version`` must stay a strict ISO date: the artifact schema
 # validates it with ``\d{4}-\d{2}-\d{2}`` plus ``date.fromisoformat``.
 PROMPT_VERSION = "2026-11-04"
-PARTNER_VERSION = "0.3.0"
+PARTNER_VERSION = "0.3.1"
 
 _OPTION_DEFAULTS: dict[str, Any] = {
     "max_diff_chars": 200_000,

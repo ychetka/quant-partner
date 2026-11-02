@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from backends.base import CompletionResult
 from backends.copilot_direct import CopilotDirectBackend
 from backends.gemini import GeminiBackend
 from backends.openai_compatible import OpenAICompatibleBackend
@@ -367,9 +368,17 @@ class PartnerMCPServer:
                     model=model,
                     generation=generation,
                 )
-                text = getattr(result, "text", "")
-                if not isinstance(text, str):
-                    text = str(text)
+                # No str() coercion: anything but a CompletionResult with
+                # non-empty str text is the same backend_error a plain
+                # ``complete`` backend raises for an empty response, and
+                # text=None must never become the literal string "None".
+                text = getattr(result, "text", None)
+                if (
+                    not isinstance(result, CompletionResult)
+                    or not isinstance(text, str)
+                    or not text.strip()
+                ):
+                    raise PartnerError("backend_error", "backend returned an empty response")
                 model_used = getattr(result, "model_used", None)
                 return text, model, model_used if isinstance(model_used, str) else None, skill
             except PartnerError as e:
