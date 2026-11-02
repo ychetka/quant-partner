@@ -31,7 +31,9 @@ class OpenAICompatibleBackend:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def list_models(self) -> list[str]:
+    def list_models(self, refresh: bool = False) -> list[str]:
+        # ``refresh`` is accepted for protocol parity; the catalog is
+        # fetched on every call and nothing is cached.
         self._require_base()
         out = get_json(
             f"{self.base_url}/models",

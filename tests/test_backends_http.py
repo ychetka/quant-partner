@@ -56,6 +56,35 @@ class BackendHttpTest(unittest.TestCase):
             self.assertEqual(backend._model_entries(), [{"id": "cached"}])
         session.assert_called_once_with()
 
+    def test_copilot_list_models_serves_catalog_cache(self):
+        backend = CopilotDirectBackend({"github_oauth_token": "oauth"}, {}, 10)
+        backend._models_cache = [{"id": "cached-model"}]
+        with patch.object(
+            backend, "_session", return_value=("https://api.githubcopilot.com", "session")
+        ):
+            self.assertEqual(backend.list_models(), ["cached-model"])
+
+    def test_copilot_list_models_refresh_clears_catalog_cache(self):
+        backend = CopilotDirectBackend({"github_oauth_token": "oauth"}, {}, 10)
+        backend._models_cache = [{"id": "stale-model"}]
+        fetched = []
+
+        def fake_get(url, **kwargs):
+            fetched.append(url)
+            return {"data": [{"id": "fresh-model"}]}
+
+        with (
+            patch.object(
+                backend, "_session", return_value=("https://api.githubcopilot.com", "session")
+            ),
+            patch("backends.copilot_direct.get_json", side_effect=fake_get),
+        ):
+            self.assertEqual(backend.list_models(refresh=True), ["fresh-model"])
+            self.assertEqual(fetched, ["https://api.githubcopilot.com/models"])
+            # The fresh catalog is cached again for non-refresh calls.
+            self.assertEqual(backend.list_models(), ["fresh-model"])
+            self.assertEqual(len(fetched), 1)
+
     def test_gemini_model_listing_follows_pagination(self):
         backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
         pages = [

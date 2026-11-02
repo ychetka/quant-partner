@@ -383,13 +383,36 @@ class PartnerMCPServer:
             cfg = self._cfg()
         except PartnerError as e:
             return failure_text(code=e.code, message=e.message, partner_id=self.partner_id)
+        except Exception:
+            return failure_text(
+                code="internal_error",
+                message="partner configuration failed",
+                partner_id=self.partner_id,
+            )
         try:
             service = self._review_service()
         except PartnerError as e:
             return failure_text(
                 code=e.code, message=e.message, partner_id=cfg.partner_id, backend=cfg.backend
             )
-        return service.review_code(arguments)
+        except Exception:
+            return failure_text(
+                code="internal_error",
+                message="review service construction failed",
+                partner_id=cfg.partner_id,
+                backend=cfg.backend,
+            )
+        try:
+            return service.review_code(arguments)
+        except Exception:
+            # review_code already never raises by contract; this is the
+            # last-resort guard that keeps the always-artifact contract.
+            return failure_text(
+                code="internal_error",
+                message="review pipeline failed",
+                partner_id=cfg.partner_id,
+                backend=cfg.backend,
+            )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         if name == "partner_info":

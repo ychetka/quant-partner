@@ -26,8 +26,14 @@ class CompletionResult:
 class PartnerBackend(Protocol):
     """Minimal synchronous backend contract."""
 
-    def list_models(self) -> list[str]:
-        """Return model IDs available to the configured account."""
+    def list_models(self, refresh: bool = False) -> list[str]:
+        """Return model IDs available to the configured account.
+
+        ``refresh=True`` asks the backend to bypass any cached catalog
+        and perform a fresh discovery call; backends without a catalog
+        cache may ignore it.
+        """
+        raise NotImplementedError
 
     def complete(
         self,

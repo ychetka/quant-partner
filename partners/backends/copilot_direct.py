@@ -127,7 +127,12 @@ class CopilotDirectBackend:
         policy = item.get("policy") if isinstance(item.get("policy"), dict) else {}
         return str(policy.get("state", "enabled")).lower() != "disabled"
 
-    def list_models(self) -> list[str]:
+    def list_models(self, refresh: bool = False) -> list[str]:
+        if refresh:
+            # Force a fresh /models lookup instead of serving the
+            # session-scoped catalog cache.
+            with self._lock:
+                self._models_cache = None
         return sorted(
             str(model.get("id", ""))
             for model in self._model_entries()
