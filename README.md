@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 One Python entrypoint runs multiple partner instances. Each instance has its own backend, base harness and pluggable skills:
 
 - `gh-copilot-partner` - code, architecture, stack, review and debugging consultations through direct GitHub Copilot API access.
-- `gemini-product` - product management, UX architecture and prioritization through the Gemini API.
+- `gemini-product` - product management, UX architecture, prioritization and advisory spec compliance verification through the Gemini API.
 - `code-reviewer` - advisory second-opinion review of unified diffs with strict model provenance.
 - `openai-compatible` - optional generic backend for any OpenAI-compatible endpoint.
 
