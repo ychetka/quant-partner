@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from . import schema
@@ -123,14 +124,58 @@ def stale_for_head(artifact: dict[str, Any], current_head_sha: Any) -> bool:
 
 
 def _drop_id(raw: Any) -> str:
+    """Best-effort finding id for drop records; secret-like ids never echo."""
     if isinstance(raw, dict) and isinstance(raw.get("id"), str) and raw["id"]:
+        if scan_for_secrets(raw["id"]):
+            return "?"
         return raw["id"][: schema.MAX_ID_CHARS]
     return "?"
+
+
+# Model-controlled finding fields that are preserved in the artifact or
+# echoed back as drop ids; every one is secret-scanned before use.
+_CONTROLLED_FINDING_KEYS = ("id", "path", "title", "body", "suggested_fix")
 
 
 def _finding_text(finding: dict[str, Any]) -> str:
     fix = finding.get("suggested_fix")
     return "\n".join([finding["title"], finding["body"], fix if isinstance(fix, str) else ""])
+
+
+def _controlled_text(finding: dict[str, Any]) -> str:
+    """Join every model-controlled string field preserved in the artifact."""
+    parts = []
+    for key in _CONTROLLED_FINDING_KEYS:
+        value = finding.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    return "\n".join(parts)
+
+
+def _safe_dropped(entries: Any) -> tuple[list[Any], int]:
+    """Keep model-provided drop records whose id carries no secret-like text."""
+    safe: list[Any] = []
+    unsafe = 0
+    if not isinstance(entries, list):
+        return safe, unsafe
+    for entry in entries:
+        if isinstance(entry, dict) and scan_for_secrets(entry.get("id")):
+            unsafe += 1
+            continue
+        safe.append(entry)
+    return safe, unsafe
+
+
+def _safe_paths(paths: Iterable[Any]) -> tuple[list[str], int]:
+    """Keep path strings that carry no secret-like text."""
+    safe: list[str] = []
+    unsafe = 0
+    for path in paths:
+        if not isinstance(path, str) or scan_for_secrets(path):
+            unsafe += 1
+            continue
+        safe.append(path)
+    return safe, unsafe
 
 
 def filter_findings(
@@ -155,6 +200,13 @@ def filter_findings(
             dropped.append({"id": _drop_id(raw), "reason": "schema"})
             continue
         finding_id = raw["id"]
+        # Secret scanning runs before any drop that echoes the id or
+        # keeps the finding: id and path are model-controlled too.
+        if scan_for_secrets(_controlled_text(raw)):
+            dropped.append(
+                {"id": "?" if scan_for_secrets(finding_id) else finding_id, "reason": "secret"}
+            )
+            continue
         if finding_id in seen_ids:
             dropped.append({"id": finding_id, "reason": "duplicate"})
             continue
@@ -166,14 +218,10 @@ def filter_findings(
         if not diff_map.contains(raw["path"], raw["line"], raw["end_line"]):
             dropped.append({"id": finding_id, "reason": "line_not_in_diff"})
             continue
-        text = _finding_text(raw)
-        if scan_for_secrets(text):
-            dropped.append({"id": finding_id, "reason": "secret"})
-            continue
         if len(kept) >= max_findings:
             dropped.append({"id": finding_id, "reason": "over_limit"})
             continue
-        warnings.extend(injection_warnings(text))
+        warnings.extend(injection_warnings(_finding_text(raw)))
         fix = raw["suggested_fix"]
         kept.append(
             {
@@ -218,10 +266,21 @@ def artifact_from_model(
     if data["head_sha"].lower() != head_sha.lower() or data["base_sha"].lower() != base_sha.lower():
         raise schema.SchemaError([schema.Issue("$.head_sha", "inconsistent")])
     kept, dropped, extra_warnings = filter_findings(data["findings"], diff_map, max_findings)
-    dropped = (list(data["dropped_findings"]) + dropped)[: schema.MAX_DROPPED]
-    unreviewed = sorted(set(data["unreviewed"]) | set(diff_map.unreviewed()))
-    unreviewed = unreviewed[: schema.MAX_UNREVIEWED]
-    warnings = [sanitize_text(w, schema.MAX_WARNING_CHARS) for w in data["warnings"]]
+    # Model-provided drop records and unreviewed paths are echoed into the
+    # artifact: entries carrying secret-like text are omitted, never echoed.
+    model_dropped, unsafe_dropped = _safe_dropped(data["dropped_findings"])
+    dropped = (model_dropped + dropped)[: schema.MAX_DROPPED]
+    safe_unreviewed, unsafe_unreviewed = _safe_paths(
+        set(data["unreviewed"]) | set(diff_map.unreviewed())
+    )
+    unreviewed = sorted(safe_unreviewed)[: schema.MAX_UNREVIEWED]
+    unsafe_count = unsafe_dropped + unsafe_unreviewed
+    warnings = (
+        [f"omitted {unsafe_count} model-provided entries containing secret-like text"]
+        if unsafe_count
+        else []
+    )
+    warnings.extend(sanitize_text(w, schema.MAX_WARNING_CHARS) for w in data["warnings"])
     warnings.extend(extra_warnings)
     warnings = warnings[: schema.MAX_WARNINGS]
     summary = sanitize_text(data["summary"], schema.MAX_SUMMARY_CHARS)

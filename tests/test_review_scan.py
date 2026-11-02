@@ -93,8 +93,23 @@ class SanitizeTest(unittest.TestCase):
 
     def test_oversized_text_truncated(self):
         cleaned = sanitize_text("x" * 5000, max_chars=100)
-        self.assertLessEqual(len(cleaned), 130)
+        self.assertLessEqual(len(cleaned), 100)
         self.assertTrue(cleaned.endswith("[truncated]"))
+
+    def test_result_never_exceeds_max_chars(self):
+        # The 120-char input grows during replacement ("javascript:x"
+        # becomes "[unsafe-link-removed]"); the bound must still hold.
+        text = "x" * 107 + " javascript:x"
+        self.assertEqual(len(text), 120)
+        cleaned = sanitize_text(text, max_chars=120)
+        self.assertLessEqual(len(cleaned), 120)
+        self.assertTrue(cleaned.endswith("[truncated]"))
+
+    def test_max_chars_bound_at_extreme_limits(self):
+        text = "a " + "@user " * 60 + "javascript:x" + "y" * 300
+        for limit in (1, 15, 16, 17, 40, 120):
+            with self.subTest(limit=limit):
+                self.assertLessEqual(len(sanitize_text(text, max_chars=limit)), limit)
 
     def test_non_string_input(self):
         self.assertEqual(sanitize_text(None), "")

@@ -268,6 +268,45 @@ Binary files a/logo.png and b/logo.png differ
         self.assertEqual(dropped[0]["reason"], "secret")
         self.assertNotIn("ghp_", repr(dropped))
 
+    def test_secret_like_finding_id_dropped_and_not_echoed(self):
+        token = "gh" + "p_" + "a" * 24
+        kept, dropped, _ = self._filter([_finding(id=token)])
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, [{"id": "?", "reason": "secret"}])
+        self.assertNotIn(token, json.dumps(dropped))
+
+    def test_secret_like_finding_path_dropped(self):
+        token = "xox" + "b-" + "1" * 12 + "-" + "a" * 12
+        kept, dropped, _ = self._filter([_finding(path="src/" + token + ".py")])
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped[0]["reason"], "secret")
+        self.assertNotIn(token, json.dumps(dropped))
+
+    def test_schema_drop_never_echoes_secret_id(self):
+        token = "gh" + "p_" + "a" * 24
+        kept, dropped, _ = self._filter([_finding(id=token, severity="catastrophic")])
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, [{"id": "?", "reason": "schema"}])
+        self.assertNotIn(token, json.dumps(dropped))
+
+    def test_model_dropped_and_unreviewed_secret_entries_omitted(self):
+        token = "gh" + "p_" + "a" * 24
+        payload = _model_payload(
+            findings=[],
+            verdict="no_findings",
+            dropped_findings=[
+                {"id": token, "reason": "secret"},
+                {"id": "safe-id", "reason": "duplicate"},
+            ],
+            unreviewed=["clean.py", token + ".py"],
+        )
+        result = _from_model(payload)
+        serialized = artifact.serialize(result)
+        self.assertNotIn(token, serialized)
+        self.assertEqual(result["dropped_findings"], [{"id": "safe-id", "reason": "duplicate"}])
+        self.assertEqual(result["unreviewed"], ["clean.py"])
+        self.assertTrue(any("secret-like" in w for w in result["warnings"]))
+
     def test_over_limit_dropped(self):
         findings = [_finding(id=f"F{i}") for i in range(5)]
         kept, dropped, _ = self._filter(findings, max_findings=2)

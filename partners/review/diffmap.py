@@ -165,10 +165,6 @@ class DiffMap:
         return sorted(path for path, file_diff in self.files.items() if not file_diff.anchorable)
 
 
-def _is_body_line(line: str) -> bool:
-    return bool(line) and line[0] in " +-\\"
-
-
 def _diff_lines(text: str) -> list[str]:
     """Split on literal ``\\n`` only, stripping one trailing ``\\r``.
 
@@ -200,8 +196,11 @@ def parse_diff(text: str) -> DiffMap:
 
     def close_hunk() -> None:
         nonlocal in_hunk
-        if in_hunk and current is not None and not hunk_done():
-            current.valid = False
+        if in_hunk and current is not None:
+            # Exact counts are the only valid ending: under-fed hunks are
+            # incomplete and over-fed hunks prove the parse drifted.
+            if seen_left != expected_left or seen_right != expected_right:
+                current.valid = False
         in_hunk = False
 
     def close_file() -> None:
@@ -231,11 +230,13 @@ def parse_diff(text: str) -> DiffMap:
             continue
 
         if in_hunk and hunk_done():
-            # Once declared counts are satisfied, header-looking lines bound
-            # the hunk (non-git diffs chain files with "--- "/"+++ " pairs).
-            # Other body lines are overflow and mark the file invalid later.
-            if line.startswith(("--- ", "+++ ", "@@ ")) or not _is_body_line(line):
-                close_hunk()
+            # Declared counts are satisfied, so the hunk ends here no
+            # matter what the line looks like. Header-looking lines bound
+            # files or hunks below (non-git diffs chain files with
+            # "--- "/"+++ " pairs); a body line past the counts is stray
+            # content outside a hunk and marks the file invalid instead
+            # of fabricating RIGHT lines.
+            close_hunk()
 
         if in_hunk:
             if line.startswith("\\"):

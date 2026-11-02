@@ -159,6 +159,17 @@ index 1..2 100644
  b
 """
 
+OVERFLOW_HUNK = """diff --git a/f.py b/f.py
+index 1..2 100644
+--- a/f.py
++++ b/f.py
+@@ -1,1 +1,1 @@
+ keep
++one
++two
++three
+"""
+
 
 class ParseDiffTest(unittest.TestCase):
     def test_simple_right_lines(self):
@@ -272,6 +283,18 @@ class ParseDiffTest(unittest.TestCase):
         diff_map = parse_diff(BAD_COUNTS)
         entry = diff_map.files["f.py"]
         self.assertFalse(entry.valid)
+        self.assertFalse(diff_map.anchorable("f.py"))
+        self.assertEqual(diff_map.right_lines("f.py"), set())
+        self.assertEqual(diff_map.unreviewed(), ["f.py"])
+
+    def test_overcounted_hunk_body_line_is_stray_and_invalid(self):
+        # The +1,1 hunk is complete after the context line; the three
+        # "+ " lines are stray content, not fabricated RIGHT lines.
+        diff_map = parse_diff(OVERFLOW_HUNK)
+        entry = diff_map.files["f.py"]
+        self.assertFalse(entry.valid)
+        self.assertEqual(entry.added, set())
+        self.assertEqual(entry.context, {1})
         self.assertFalse(diff_map.anchorable("f.py"))
         self.assertEqual(diff_map.right_lines("f.py"), set())
         self.assertEqual(diff_map.unreviewed(), ["f.py"])

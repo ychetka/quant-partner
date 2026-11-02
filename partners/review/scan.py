@@ -95,6 +95,7 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _TAG_RE = re.compile(r"<[^>\n]{0,200}>")
 _MENTION_RE = re.compile(r"(?<![\w./@-])@[A-Za-z0-9][A-Za-z0-9_-]{0,38}")
 _UNSAFE_LINK_RE = re.compile(r"(?i)\b(?:javascript|vbscript|data|file)\s*:[^\s)\]}'\"]{0,500}")
+_TRUNCATION_SUFFIX = " ... [truncated]"
 
 
 def _line_of(text: str, offset: int) -> int:
@@ -128,12 +129,19 @@ def injection_warnings(text: object) -> list[str]:
 
 
 def sanitize_text(text: object, max_chars: int = MAX_SANITIZED_CHARS) -> str:
-    """Strip HTML tags, unsafe links and ``@`` mentions; bound the result length."""
+    """Strip HTML tags, unsafe links and ``@`` mentions; bound the result length.
+
+    Replacements can grow the input, and the truncation marker consumes
+    budget too: its length is reserved before cutting so the returned
+    text never exceeds ``max_chars``.
+    """
     if not isinstance(text, str):
         return ""
     cleaned = _TAG_RE.sub("", text)
     cleaned = _UNSAFE_LINK_RE.sub("[unsafe-link-removed]", cleaned)
     cleaned = _MENTION_RE.sub("[mention]", cleaned)
-    if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars].rstrip() + " ... [truncated]"
-    return cleaned
+    if len(cleaned) <= max_chars:
+        return cleaned
+    if max_chars <= len(_TRUNCATION_SUFFIX):
+        return cleaned[:max_chars]
+    return cleaned[: max_chars - len(_TRUNCATION_SUFFIX)].rstrip() + _TRUNCATION_SUFFIX

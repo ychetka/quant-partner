@@ -52,7 +52,17 @@ def idempotency_key(
     ``review_id`` and timestamps are deliberately absent: they are
     correlation metadata, not review inputs.
     """
-    context_blob = context + "\n".join(str(item) for item in file_contents)
+    # A length-prefixed canonical JSON object removes the concatenation
+    # ambiguity between ``context`` and ``file_contents`` boundaries.
+    context_blob = json.dumps(
+        {
+            "context": str(context),
+            "file_contents": [str(item) for item in file_contents],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     parts = [
         schema_version,
         prompt_version,
@@ -149,6 +159,10 @@ class ArtifactCache:
         removed = 0
         entries: list[tuple[float, Path]] = []
         for path in self.cache_dir.glob("*.json"):
+            if _KEY_RE.fullmatch(path.stem) is None:
+                # Only manage own cache entries: stray ``.tmp-*.json``
+                # leftovers and unrelated files are left untouched.
+                continue
             try:
                 stat = path.stat()
             except OSError:

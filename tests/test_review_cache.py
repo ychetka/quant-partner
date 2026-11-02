@@ -100,6 +100,13 @@ class IdempotencyKeyTest(unittest.TestCase):
         time.sleep(0.001)
         self.assertEqual(idempotency_key(**_KEY_PARAMS), key)
 
+    def test_context_file_contents_boundary_is_unambiguous(self):
+        # Plain concatenation collides: "ab"+"c" == "a"+"bc". Canonical
+        # JSON keeps the boundary, so the keys must differ.
+        first = idempotency_key(**{**_KEY_PARAMS, "context": "ab", "file_contents": ["c"]})
+        second = idempotency_key(**{**_KEY_PARAMS, "context": "a", "file_contents": ["bc"]})
+        self.assertNotEqual(first, second)
+
 
 class ArtifactCacheTest(unittest.TestCase):
     def setUp(self):
@@ -198,6 +205,23 @@ class ArtifactCacheTest(unittest.TestCase):
         old = time.time() - 7200
         os.utime(path, (old, old))
         self.assertEqual(self.cache.prune(), 1)
+
+    def test_prune_ignores_non_cache_files(self):
+        # Only files whose stem is a 64-hex key are managed: leftover
+        # ".tmp-*.json" files and unrelated JSON are left untouched.
+        stray_tmp = self.dir / ".tmp-stuck.json"
+        stray_tmp.write_text("{}", encoding="utf-8")
+        unrelated = self.dir / "notes.json"
+        unrelated.write_text("{}", encoding="utf-8")
+        self.assertTrue(self.cache.put(self.key, _artifact()))
+        valid = self.dir / f"{self.key}.json"
+        old = time.time() - 7200
+        os.utime(valid, (old, old))
+        removed = self.cache.prune()
+        self.assertEqual(removed, 1)
+        self.assertFalse(valid.exists())
+        self.assertTrue(stray_tmp.exists())
+        self.assertTrue(unrelated.exists())
 
     def test_bad_key_rejected(self):
         with self.assertRaises(ValueError):
