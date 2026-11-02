@@ -58,6 +58,40 @@
       },
       "timeout_seconds": 240
     },
+    "code-reviewer": {
+      "enabled": true,
+      "toolset": "review",
+      "backend": "copilot-direct",
+      "harness": "harness/code-reviewer.txt",
+      "default_skill": "code-reviewer",
+      "skills_root": "skills/code-reviewer",
+      "auth": {
+        "github_oauth_token": "GITHUB_OAUTH_TOKEN_HERE"
+      },
+      "options": {
+        "review": {
+          "max_diff_chars": 200000,
+          "max_context_chars": 50000,
+          "max_files": 20,
+          "max_file_chars": 100000,
+          "max_findings": 20,
+          "cache_dir": ".cache/reviewer",
+          "cache_ttl_seconds": 86400,
+          "allowed_models": {
+            "claude": {
+              "backend_model": "claude-sonnet-5.5",
+              "match": "exact"
+            },
+            "gpt": {
+              "backend_model": "gpt-5.3-codex",
+              "match": "exact"
+            }
+          }
+        }
+      },
+      "model": "claude-sonnet-5.5",
+      "timeout_seconds": 240
+    },
     "local-openai-partner": {
       "enabled": false,
       "toolset": "code",

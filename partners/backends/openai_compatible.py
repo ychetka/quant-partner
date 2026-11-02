@@ -10,6 +10,8 @@ from typing import Any
 from core.errors import PartnerError, invalid_config
 from core.http import get_json, post_json
 
+from .base import CompletionResult
+
 
 class OpenAICompatibleBackend:
     def __init__(self, auth: dict[str, Any], options: dict[str, Any], timeout: int) -> None:
@@ -29,7 +31,9 @@ class OpenAICompatibleBackend:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def list_models(self) -> list[str]:
+    def list_models(self, refresh: bool = False) -> list[str]:
+        # ``refresh`` is accepted for protocol parity; the catalog is
+        # fetched on every call and nothing is cached.
         self._require_base()
         out = get_json(
             f"{self.base_url}/models",
@@ -47,6 +51,18 @@ class OpenAICompatibleBackend:
         model: str,
         generation: dict[str, Any],
     ) -> str:
+        return self.complete_ex(
+            messages, system_prompt=system_prompt, model=model, generation=generation
+        ).text
+
+    def complete_ex(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+    ) -> CompletionResult:
         self._require_base()
         wire = [{"role": "system", "content": system_prompt}] if system_prompt else []
         wire += [
@@ -77,4 +93,7 @@ class OpenAICompatibleBackend:
             raise PartnerError(
                 "backend_error", "OpenAI-compatible backend returned an empty response"
             )
-        return text
+        served = out.get("model")
+        return CompletionResult(
+            text=text, model_used=served if isinstance(served, str) and served else None
+        )

@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "code-reviewer",
+  "description": "Advisory second-opinion review of a supplied unified diff with strict JSON artifact output.",
+  "when_to_use": "Used by the review_code tool for an independent, non-binding review of a pull-request diff.",
+  "generation": {
+    "temperature": 0.1
+  },
+  "version": 1
+}
