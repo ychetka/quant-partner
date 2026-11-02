@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from core.config import (  # noqa: E402
     load_partner_config,
     load_skill,
 )
+from review.schema import extract_json, validate  # noqa: E402
 
 SKILL_NAME = "spec-compliance-verifier"
 SKILL_DIR = ROOT / "partners" / "skills" / "gemini-product" / SKILL_NAME
@@ -49,7 +51,7 @@ class SpecVerifierSkillTest(unittest.TestCase):
         skill = load_skill(cfg, SKILL_NAME)
         prompt = compose_system_prompt(cfg, skill)
         self.assertIn("Spec Compliance Verifier", prompt)
-        self.assertIn("consulting partner", prompt)
+        self.assertIn(skill.prompt, prompt)
         self.assertNotIn("Copyright", prompt)
         self.assertNotIn("SPDX-License-Identifier", prompt)
         self.assertNotIn("Copyright", skill.prompt)
@@ -62,6 +64,23 @@ class SpecVerifierSkillTest(unittest.TestCase):
         self.assertIn("spec_drift", prompt)
         self.assertIn('"unreviewed"', prompt)
         self.assertIn("JSON", prompt)
+        for reason in (
+            "schema",
+            "path_not_in_diff",
+            "line_not_in_diff",
+            "secret",
+            "duplicate",
+            "over_limit",
+        ):
+            self.assertIn(f"`{reason}`", prompt)
+
+    def test_embedded_json_template_is_schema_valid(self):
+        prompt = load_skill(_gemini_cfg(), SKILL_NAME).prompt
+        match = re.search(r"```json[^\n]*\n.*?\n```", prompt, re.DOTALL)
+        if match is None:
+            self.fail("prompt.txt must embed a fenced ```json artifact template")
+        artifact = extract_json(match.group(0))
+        self.assertEqual(validate(artifact), [])
 
     def test_prompt_safety_clauses(self):
         prompt = load_skill(_gemini_cfg(), SKILL_NAME).prompt.lower()
