@@ -42,6 +42,7 @@ jobs:
           """Start coverage in child processes of measured CI runs."""
 
           import os
+          import sys
 
           if os.environ.get("COVERAGE_PROCESS_START"):
               try:
@@ -49,7 +50,10 @@ jobs:
 
                   coverage.process_startup()
               except Exception:
-                  pass
+                  print(
+                      "coverage: subprocess startup unavailable",
+                      file=sys.stderr,
+                  )
           PYEOF
       - name: Run unit tests under coverage
         continue-on-error: true
@@ -79,7 +83,8 @@ jobs:
         continue-on-error: true
         run: uv run --with "coverage==7.6.1" coverage json -o coverage.json
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-report
           include-hidden-files: true
