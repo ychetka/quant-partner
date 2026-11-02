@@ -168,12 +168,20 @@ uvx --from "pyright[nodejs]==1.1.414" pyright
 
 CI runs this check in a separate `typecheck` job that is currently non-blocking (`continue-on-error: true`) until the known error baseline is fixed. Once the baseline is cleaned up, `continue-on-error` should be removed so the check becomes blocking.
 
-Run a local protocol smoke test:
+Run a no-secret protocol smoke test against `partners/config.example.json`. These are the same commands the CI `Protocol Smoke` workflow runs; they exercise stdio startup and JSON-RPC tool discovery only and never call a provider:
 
 ```bash
 PARTNER_ID=gh-copilot-partner \
-PARTNER_CONFIG=partners/config.json \
+PARTNER_CONFIG=partners/config.example.json \
 python3 tools/mcp_smoke.py --list
+
+PARTNER_ID=gh-copilot-partner \
+PARTNER_CONFIG=partners/config.example.json \
+python3 tools/mcp_smoke.py --call partner_info
+
+PARTNER_ID=gh-copilot-partner \
+PARTNER_CONFIG=partners/config.example.json \
+python3 tools/mcp_smoke.py --call list_partner_skills
 ```
 
 Run a live call:
@@ -184,7 +192,9 @@ PARTNER_CONFIG=partners/config.json \
 python3 tools/mcp_smoke.py --call ask_product_partner --question 'Say OK.'
 ```
 
-The smoke client exits nonzero when the server returns a JSON-RPC error or a tool result with `isError`.
+Live calls through provider-backed tools (`ask_*`, `list_partner_models`) require a local `partners/config.json` with real credentials and are intentionally not part of CI.
+
+The smoke client exits nonzero when the server returns a JSON-RPC error, a tool result with `isError`, a missing response or a non-JSON stdout line.
 
 ## Notes
 
