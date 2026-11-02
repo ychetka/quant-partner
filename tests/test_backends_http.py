@@ -192,17 +192,22 @@ class OpenAICompatibleLiveTest(unittest.TestCase):
         self.assertIn("error", body)
 
     def test_unreachable_endpoint_raises_partner_unreachable(self):
+        # Bound but never listen()ing: the port stays taken for the
+        # whole test (no bind-then-close reclaim window) while the
+        # kernel refuses connections.
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-        backend = self._backend(f"http://127.0.0.1:{port}/v1")
-        with self.assertRaises(PartnerError) as ctx:
-            self._complete_ex(backend)
-        self.assertEqual(ctx.exception.code, "partner_unreachable")
-        with self.assertRaises(PartnerError) as ctx:
-            backend.list_models()
-        self.assertEqual(ctx.exception.code, "partner_unreachable")
+        try:
+            port = sock.getsockname()[1]
+            backend = self._backend(f"http://127.0.0.1:{port}/v1")
+            with self.assertRaises(PartnerError) as ctx:
+                self._complete_ex(backend)
+            self.assertEqual(ctx.exception.code, "partner_unreachable")
+            with self.assertRaises(PartnerError) as ctx:
+                backend.list_models()
+            self.assertEqual(ctx.exception.code, "partner_unreachable")
+        finally:
+            sock.close()
 
 
 if __name__ == "__main__":

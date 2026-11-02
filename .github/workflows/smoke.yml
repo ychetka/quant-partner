@@ -115,7 +115,7 @@ jobs:
         run: |
           python3 tools/fake_openai_server.py --port 4143 &
           for i in $(seq 1 50); do
-            if curl -sf http://127.0.0.1:4143/healthz > /dev/null; then
+            if curl -sf http://127.0.0.1:4143/healthz | grep -q '"status": "ok"'; then
               exit 0
             fi
             sleep 0.2

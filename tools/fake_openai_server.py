@@ -122,12 +122,23 @@ def make_handler(served_model: str | None = None) -> type[BaseHTTPRequestHandler
             if not path.endswith("/chat/completions"):
                 self._not_found()
                 return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = 0
-            length = min(max(length, 0), MAX_BODY_BYTES)
-            raw = self.rfile.read(length) if length else b""
+            content_length = self.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    length = int(content_length)
+                except ValueError:
+                    length = 0
+                if length > MAX_BODY_BYTES:
+                    self._send_json(413, _error_payload(413, "request body too large"))
+                    return
+                raw = self.rfile.read(length) if length > 0 else b""
+            else:
+                # No declared length: read one byte past the cap so
+                # oversized bodies are rejected instead of clamped.
+                raw = self.rfile.read(MAX_BODY_BYTES + 1)
+                if len(raw) > MAX_BODY_BYTES:
+                    self._send_json(413, _error_payload(413, "request body too large"))
+                    return
             try:
                 payload = json.loads(raw or b"{}")
             except json.JSONDecodeError:
