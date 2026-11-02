@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "partners" / "mcp_partner.py"
@@ -69,13 +70,30 @@ def main() -> int:
         env=env,
         timeout=600,
     )
+    expected_ids = [request["id"] for request in requests]
+    seen_ids: set[Any] = set()
     failed = False
     for line in proc.stdout.splitlines():
-        message = json.loads(line)
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            print("smoke: suppressed non-JSON line on server stdout", file=sys.stderr)
+            failed = True
+            continue
+        if not isinstance(message, dict):
+            print("smoke: suppressed non-object JSON line on server stdout", file=sys.stderr)
+            failed = True
+            continue
         print(json.dumps(message, ensure_ascii=False, indent=2))
+        if "id" in message:
+            seen_ids.add(message["id"])
         result = message.get("result")
         if message.get("error") or (isinstance(result, dict) and result.get("isError")):
             failed = True
+    missing_ids = [rid for rid in expected_ids if rid not in seen_ids]
+    if missing_ids:
+        print(f"smoke: missing responses for request ids: {missing_ids}", file=sys.stderr)
+        failed = True
     if proc.stderr:
         print(proc.stderr, file=sys.stderr, end="")
     return 1 if failed else proc.returncode
