@@ -1,0 +1,6 @@
+{
+  "include": ["partners", "tests"],
+  "extraPaths": ["partners"],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic"
+}
