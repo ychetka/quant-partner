@@ -1,0 +1,88 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      PARTNER_ID: gh-copilot-partner
+      PARTNER_CONFIG: partners/config.example.json
+      PYTHONPATH: ${{ github.workspace }}/.cov-ci
+      COVERAGE_PROCESS_START: ${{ github.workspace }}/.coveragerc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Install subprocess coverage hook
+        # sitecustomize.py on PYTHONPATH starts coverage inside the MCP
+        # server subprocess spawned by tools/mcp_smoke.py. The file is
+        # generated at run time and is never committed.
+        run: |
+          mkdir -p .cov-ci
+          cat > .cov-ci/sitecustomize.py <<'PYEOF'
+          """Start coverage in child processes of measured CI runs."""
+
+          import os
+
+          if os.environ.get("COVERAGE_PROCESS_START"):
+              try:
+                  import coverage
+
+                  coverage.process_startup()
+              except Exception:
+                  pass
+          PYEOF
+      - name: Run unit tests under coverage
+        continue-on-error: true
+        run: uv run --with "pytest==9.2.0" --with "coverage==7.6.1" coverage run -m pytest -x -q
+      - name: Smoke tools/list under coverage
+        continue-on-error: true
+        run: uv run --with "coverage==7.6.1" coverage run tools/mcp_smoke.py --list
+      - name: Smoke partner_info call under coverage
+        continue-on-error: true
+        run: uv run --with "coverage==7.6.1" coverage run tools/mcp_smoke.py --call partner_info
+      - name: Verify subprocess coverage data
+        continue-on-error: true
+        run: |
+          count=$(ls .coverage.* 2>/dev/null | wc -l)
+          echo "coverage data files: $count"
+          ls -la .coverage.* || true
+          if [ "$count" -lt 2 ]; then
+            echo "::warning::expected data files from both the smoke client and the MCP server subprocess"
+          fi
+      - name: Combine coverage data
+        continue-on-error: true
+        run: uv run --with "coverage==7.6.1" coverage combine
+      - name: Report coverage to step summary
+        continue-on-error: true
+        run: uv run --with "coverage==7.6.1" coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - name: Export coverage JSON
+        continue-on-error: true
+        run: uv run --with "coverage==7.6.1" coverage json -o coverage.json
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          include-hidden-files: true
+          path: |
+            coverage.json
+            .coverage.*
