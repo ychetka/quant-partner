@@ -56,6 +56,24 @@ For `gh-copilot-partner`, `auth.github_oauth_token` must be an OAuth user token 
 
 For `gemini-product`, `auth.gemini_api_key` is a Google AI Studio API key.
 
+### Environment overrides
+
+Auth secrets and the primary model can also be supplied through partner-scoped environment variables. Variable names use two unambiguous families; the partner id and the auth key are normalized to uppercase with every non-alphanumeric character replaced by `_`:
+
+- `QP_AUTH_<PARTNER_ID>_<AUTH_KEY>` - provides or overrides `partners.<partner_id>.auth.<auth_key>` (for example `github_oauth_token` becomes `GITHUB_OAUTH_TOKEN`). The known keys `github_oauth_token`, `gemini_api_key` and `api_key` are read even when absent from the file auth object; any other key already declared in the file auth object can be overridden too.
+- `QP_MODEL_<PARTNER_ID>` - overrides `partners.<partner_id>.model`.
+
+Exact examples:
+
+- `QP_AUTH_GH_COPILOT_PARTNER_GITHUB_OAUTH_TOKEN`
+- `QP_AUTH_GEMINI_PRODUCT_GEMINI_API_KEY`
+- `QP_AUTH_LOCAL_OPENAI_PARTNER_API_KEY`
+- `QP_MODEL_GH_COPILOT_PARTNER`
+
+A non-empty environment value wins over `partners/config.json`; empty or whitespace-only values are ignored. `partners/config.json` stays local and gitignored either way - the variables only change where a value is resolved from, never where it is stored. There are no generic overrides for `models`, `fallback_models`, `generation` or `options`.
+
+The `auth` object may be omitted from a partner section when every needed secret comes from the environment; a non-object `auth` value is still rejected. To keep the variable names unambiguous, a config is rejected as `invalid_config` when two partner ids - or two auth keys of the loaded partner - normalize to the same token, or when any two `(partner_id, auth_key)` pairs across all configured partners would produce the same `QP_AUTH_` variable name.
+
 ## MCP client registration
 
 Add two servers to your MCP client configuration, replacing the path placeholders:
