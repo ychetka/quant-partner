@@ -355,6 +355,29 @@ class SmokeArtifactCheckTest(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("schema", err)
         self.assertNotIn("SENTINEL_VALUE", err)
+        self.assertNotIn("SENTINEL_KEY", err)
+
+    def test_unknown_key_name_not_echoed_to_stderr(self):
+        # Schema issue paths embed the offending key, which can be a
+        # secret-like attacker-controlled name; stderr must carry only
+        # stable issue codes.
+        secret_key = "topsecret_do_not_leak_key"
+        payload = json.loads(_error_artifact_text())
+        payload[secret_key] = "value"
+        stdout = self._call_stdout(json.dumps(payload))
+        code, _, err = self._run_main(
+            [
+                "mcp_smoke.py",
+                "--call",
+                "review_code",
+                "--expect-artifact-status",
+                "error",
+            ],
+            fake_completed(stdout),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("unknown_key", err)
+        self.assertNotIn(secret_key, err)
 
 
 class ReviewSmokeEndToEndTest(unittest.TestCase):

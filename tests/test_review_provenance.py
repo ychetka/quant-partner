@@ -83,6 +83,7 @@ class DiscoveryTest(unittest.TestCase):
             4.2,
             object(),
             {"models": ["claude-sonnet-5.5"]},
+            "claude-sonnet-5.5",
         )
         for discovered in malformed:
             with self.subTest(discovered=repr(discovered)):
@@ -90,6 +91,16 @@ class DiscoveryTest(unittest.TestCase):
                     confirm_discovery(resolved, cast(Any, discovered))
                 self.assertEqual(ctx.exception.code, "model_unconfirmed")
                 self.assertEqual(ctx.exception.status, "rejected")
+
+    def test_mapping_shaped_discovery_fails_closed(self):
+        # A mapping is not a model-name sequence: iterating it yields
+        # keys, so even a key equal to the pinned model must not
+        # confirm anything.
+        resolved = resolve_alias("claude", ALLOWED)
+        with self.assertRaises(ProvenanceError) as ctx:
+            confirm_discovery(resolved, {"claude-sonnet-5.5": {}})
+        self.assertEqual(ctx.exception.code, "model_unconfirmed")
+        self.assertEqual(ctx.exception.status, "rejected")
 
     def test_discovery_iterable_that_raises_fails_closed(self):
         def exploding():

@@ -57,11 +57,18 @@ def _first_text(result: Any) -> str | None:
     return text if isinstance(text, str) else None
 
 
+def _issue_codes(issues: Any) -> str:
+    """Render stable issue codes only; paths may echo attacker-controlled keys."""
+    codes = sorted({issue.code for issue in issues})
+    return ", ".join(codes) if codes else "schema_invalid"
+
+
 def _check_artifact(text: str, args: argparse.Namespace) -> bool:
     """Validate call text as an advisory artifact; True when a check fails.
 
-    Error output reports issue paths and codes only - never the artifact
-    content itself.
+    Error output reports stable issue codes only - never issue paths,
+    exception text or the artifact content itself, all of which may
+    embed attacker-controlled key names.
     """
     try:
         schema = _load_schema()
@@ -71,12 +78,20 @@ def _check_artifact(text: str, args: argparse.Namespace) -> bool:
     try:
         artifact = schema.extract_json(text)
     except schema.SchemaError as e:
-        print(f"smoke: tools/call text is not a parseable artifact: {e}", file=sys.stderr)
+        print(
+            f"smoke: tools/call text is not a parseable artifact: {_issue_codes(e.issues)}",
+            file=sys.stderr,
+        )
+        return True
+    except Exception:
+        print("smoke: tools/call text is not a parseable artifact", file=sys.stderr)
         return True
     issues = schema.validate(artifact)
     if issues:
-        preview = "; ".join(f"{issue.path}:{issue.code}" for issue in issues[:8])
-        print(f"smoke: artifact failed schema validation: {preview}", file=sys.stderr)
+        print(
+            f"smoke: artifact failed schema validation: {_issue_codes(issues)}",
+            file=sys.stderr,
+        )
         return True
     if args.expect_artifact_status and artifact["status"] != args.expect_artifact_status:
         print(
