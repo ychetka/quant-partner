@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
+import importlib.util
+import json
+import socket
 import sys
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,8 +18,23 @@ sys.path.insert(0, str(ROOT / "partners"))
 
 from backends.copilot_direct import CopilotDirectBackend  # noqa: E402
 from backends.gemini import GeminiBackend  # noqa: E402
+from backends.openai_compatible import OpenAICompatibleBackend  # noqa: E402
 from core.errors import PartnerError  # noqa: E402
 from core.http import _SafeRedirectHandler, post_json  # noqa: E402
+
+FAKE_SERVER = ROOT / "tools" / "fake_openai_server.py"
+
+
+def _load_fake_server_module():
+    spec = importlib.util.spec_from_file_location("fake_openai_server", FAKE_SERVER)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {FAKE_SERVER}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+FAKE = _load_fake_server_module()
 
 
 class BackendHttpTest(unittest.TestCase):
@@ -101,6 +122,92 @@ class BackendHttpTest(unittest.TestCase):
             self.assertEqual(backend.list_models(), ["a", "b"])
         self.assertEqual(len(calls), 2)
         self.assertIn("pageToken=next", calls[1])
+
+
+class OpenAICompatibleLiveTest(unittest.TestCase):
+    """Drive OpenAICompatibleBackend against the threaded fake endpoint."""
+
+    def setUp(self):
+        self.server = FAKE.build_server(0)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+        self.base_url = f"http://127.0.0.1:{self.port}/v1"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+    def _backend(self, base_url=None):
+        return OpenAICompatibleBackend(
+            {"api_key": "fake-test-key"},
+            {"openai": {"base_url": base_url or self.base_url}},
+            10,
+        )
+
+    def _complete_ex(self, backend, model="fake-model-a"):
+        return backend.complete_ex(
+            [{"role": "user", "content": "ping"}],
+            system_prompt="sys",
+            model=model,
+            generation={},
+        )
+
+    def test_healthz_reports_ready(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/healthz", timeout=5) as res:
+            self.assertEqual(res.status, 200)
+
+    def test_list_models_returns_fake_ids(self):
+        self.assertEqual(self._backend().list_models(), ["fake-model-a", "fake-model-b"])
+
+    def test_complete_ex_reports_echoed_model(self):
+        result = self._complete_ex(self._backend())
+        self.assertTrue(result.text.startswith("fake-ok:"))
+        self.assertIn("ping", result.text)
+        # Without --served-model the fake echoes the requested model.
+        self.assertEqual(result.model_used, "fake-model-a")
+
+    def test_served_model_override_wins_over_request(self):
+        server = FAKE.build_server(0, served_model="fake-served-model")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            port = server.server_address[1]
+            backend = self._backend(f"http://127.0.0.1:{port}/v1")
+            result = self._complete_ex(backend, model="fake-model-a")
+            # Provenance verdict: model_used carries the response-side
+            # model verbatim, which may differ from the requested one.
+            self.assertEqual(result.model_used, "fake-served-model")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_unknown_path_returns_json_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}/v1/nope", timeout=5)
+        self.assertEqual(ctx.exception.code, 404)
+        body = json.loads(ctx.exception.read())
+        self.assertIn("error", body)
+
+    def test_unreachable_endpoint_raises_partner_unreachable(self):
+        # Bound but never listen()ing: the port stays taken for the
+        # whole test (no bind-then-close reclaim window) while the
+        # kernel refuses connections.
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        try:
+            port = sock.getsockname()[1]
+            backend = self._backend(f"http://127.0.0.1:{port}/v1")
+            with self.assertRaises(PartnerError) as ctx:
+                self._complete_ex(backend)
+            self.assertEqual(ctx.exception.code, "partner_unreachable")
+            with self.assertRaises(PartnerError) as ctx:
+                backend.list_models()
+            self.assertEqual(ctx.exception.code, "partner_unreachable")
+        finally:
+            sock.close()
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ partners/
   skills/<partner>/<skill>/       manifest.json + prompt.txt
 tools/
   mcp_smoke.py                    local JSON-RPC smoke client
+  fake_openai_server.py           deterministic loopback OpenAI-compatible endpoint
 tests/                            stdlib unit tests
 ```
 
@@ -144,6 +145,29 @@ With `strict_model` (default `true`) the call fails closed unless live model dis
 Optional `files` entries are bounded extra context: a repo-relative path string acts as a label only, while `{name, content}` objects attach inline text. All file contents are caller-supplied; the server never reads the filesystem.
 
 The artifact is advisory only (`advisory: true`): it never authorizes a merge and never publishes comments or reviews anywhere. Input validation, path checks and outbound secret scanning all run before any provider access, so oversized, unsafe or secret-like input is rejected without a backend call. Only `status=ok` artifacts are cached, keyed by an `idempotency_key` derived from the review inputs.
+
+## local-openai-partner (OpenAI-compatible endpoint)
+
+`local-openai-partner` is a disabled-by-default partner that talks to any OpenAI-compatible HTTP endpoint through the `openai-compatible` backend. It stays disabled in `partners/config.example.json`; enable it only in a local `partners/config.json` after pointing it at an endpoint you control. Because `options.openai.base_url` can be any host, enabling this partner sends prompts and file context to that endpoint - keep it off unless the endpoint is intended.
+
+Endpoint contract under `options.openai.base_url` (for example `http://127.0.0.1:11434/v1`):
+
+- `GET {base_url}/models` must return `{"object": "list", "data": [{"id": "...", "object": "model"}, ...]}`. The ids feed `list_partner_models()`.
+- `POST {base_url}/chat/completions` accepts `{"model", "messages", "stream": false, "temperature", "max_tokens"}` and must return `choices[0].message.content` as a non-empty string. A top-level `model` string is optional; when present it is reported as `model_used`.
+
+Authentication is optional. When `auth.api_key` - or the `QP_AUTH_LOCAL_OPENAI_PARTNER_API_KEY` environment override - is set, it is sent as `Authorization: Bearer <key>`; endpoints without auth can leave the placeholder in place or omit `auth` entirely.
+
+For repeatable no-secret testing run the bundled fake endpoint. It binds 127.0.0.1 only, serves the two fixed ids `fake-model-a` and `fake-model-b`, returns deterministic `fake-ok: ...` answers and exposes `GET /healthz` for readiness polling:
+
+```bash
+python3 tools/fake_openai_server.py --port 4143
+# --served-model NAME overrides the model id reported in responses;
+# by default the requested model is echoed back.
+```
+
+Then point `options.openai.base_url` at `http://127.0.0.1:4143/v1`. The `openai-compat-smoke` job in the Protocol Smoke workflow exercises the full pipeline - config load, backend call, response parsing - against this fake endpoint in CI without secrets.
+
+`model_used` verdict: the backend reports the response-side `model` field exactly as the endpoint returned it. Whether that value proves served-model identity is endpoint-dependent - a proxy may echo the request `model` back or omit the field entirely - so strict `code-reviewer` provenance on this backend requires verifying that the specific endpoint does not merely echo. The fail-closed `strict_model` behavior still applies: a missing or mismatched `model_used` is never treated as confirmed.
 
 ## Harness and skills
 

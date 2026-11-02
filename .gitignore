@@ -16,3 +16,4 @@ node_modules/
 .cache/
 partners/config.json
 partners/*.local.json
+.ci-openai.json

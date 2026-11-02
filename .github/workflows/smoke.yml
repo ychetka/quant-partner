@@ -65,3 +65,76 @@ jobs:
           --arguments-json '{"head_sha":"1111111111111111111111111111111111111111","base_sha":"2222222222222222222222222222222222222222","diff":"diff --git a/f.py b/f.py\nindex 1111111..2222222 100644\n--- a/f.py\n+++ b/f.py\n@@ -1,1 +1,1 @@\n-old\n+new\n","model":"definitely-not-allowlisted"}'
           --expect-artifact-status error
           --expect-error-code unknown_model
+
+  openai-compat-smoke:
+    runs-on: ubuntu-latest
+    env:
+      PARTNER_ID: local-openai-partner
+      PARTNER_CONFIG: .ci-openai.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Generate CI partner config
+        # Generated per run and never committed; enables only
+        # local-openai-partner against the loopback fake endpoint.
+        run: |
+          cat > .ci-openai.json <<'JSON'
+          {
+            "version": 1,
+            "partners": {
+              "local-openai-partner": {
+                "enabled": true,
+                "toolset": "code",
+                "backend": "openai-compatible",
+                "harness": "harness/gh-copilot-partner.txt",
+                "default_skill": "software-architect",
+                "skills_root": "skills/gh-copilot-partner",
+                "auth": {
+                  "api_key": "fake-test-key"
+                },
+                "options": {
+                  "openai": {
+                    "base_url": "http://127.0.0.1:4143/v1"
+                  }
+                },
+                "model": "fake-model-a",
+                "generation": {
+                  "temperature": 0.2,
+                  "max_tokens": 128
+                },
+                "timeout_seconds": 30
+              }
+            }
+          }
+          JSON
+      - name: Start fake OpenAI endpoint
+        run: |
+          python3 tools/fake_openai_server.py --port 4143 &
+          for i in $(seq 1 50); do
+            if curl -sf http://127.0.0.1:4143/healthz | grep -q '"status": "ok"'; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "fake OpenAI endpoint did not become ready" >&2
+          exit 1
+      - name: Smoke tools/list over stdio
+        run: >
+          python3 tools/mcp_smoke.py --list
+          --expect-tool ask_code_partner
+          --expect-tool list_partner_models
+          --forbid-tool review_code
+          --forbid-tool ask_product_partner
+      - name: Smoke list_partner_models against fake endpoint
+        run: python3 tools/mcp_smoke.py --call list_partner_models
+      - name: Smoke ask_code_partner end to end
+        # The fake endpoint returns a deterministic answer, so the full
+        # pipeline - config load, backend call, response parsing - runs
+        # in CI without secrets or external network access.
+        run: >
+          python3 tools/mcp_smoke.py --call ask_code_partner
+          --arguments-json '{"question":"ping"}'
