@@ -34,3 +34,34 @@ jobs:
         run: python3 tools/mcp_smoke.py --call partner_info
       - name: Smoke list_partner_skills call
         run: python3 tools/mcp_smoke.py --call list_partner_skills
+
+  review-protocol-smoke:
+    runs-on: ubuntu-latest
+    env:
+      PARTNER_ID: code-reviewer
+      PARTNER_CONFIG: partners/config.example.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Smoke review tools/list over stdio
+        run: >
+          python3 tools/mcp_smoke.py --list
+          --expect-tool review_code
+          --expect-tool list_reviewer_models
+          --forbid-tool ask_code_partner
+          --forbid-tool ask_product_partner
+          --forbid-tool list_partner_models
+      - name: Smoke list_reviewer_models call
+        run: python3 tools/mcp_smoke.py --call list_reviewer_models
+      - name: Smoke review_code unknown alias fails closed
+        # Fake SHAs/diff plus an unknown alias stop before any provider
+        # access; the call must return a schema-valid error artifact.
+        run: >
+          python3 tools/mcp_smoke.py --call review_code
+          --arguments-json '{"head_sha":"1111111111111111111111111111111111111111","base_sha":"2222222222222222222222222222222222222222","diff":"diff --git a/f.py b/f.py\nindex 1111111..2222222 100644\n--- a/f.py\n+++ b/f.py\n@@ -1,1 +1,1 @@\n-old\n+new\n","model":"definitely-not-allowlisted"}'
+          --expect-artifact-status error
+          --expect-error-code unknown_model

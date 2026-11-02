@@ -5,7 +5,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partners"))
@@ -347,6 +347,44 @@ index 1..2 100644
         self.assertFalse(artifact.stale_for_head(result, HEAD_SHA.upper()))
         self.assertTrue(artifact.stale_for_head(result, "d" * 40))
         self.assertTrue(artifact.stale_for_head(result, None))
+
+    def test_publisher_discard_rule_for_stale_head(self):
+        # Spec section 7: the primary reviewer rechecks the PR head
+        # immediately before publishing; an artifact whose head_sha no
+        # longer matches - or cannot be compared - is discarded.
+        result = _from_model(_model_payload())
+        self.assertEqual(result["head_sha"], HEAD_SHA)
+        publish = lambda current: not artifact.stale_for_head(result, current)  # noqa: E731
+        self.assertTrue(publish(HEAD_SHA))
+        self.assertTrue(publish(HEAD_SHA.upper()))
+        # Head moved since the review: the artifact must be discarded.
+        self.assertFalse(publish("d" * 40))
+        # Missing or malformed inputs fail closed: never publishable.
+        for bad in (None, "", 42, {"head": HEAD_SHA}, ["x"]):
+            with self.subTest(bad=bad):
+                self.assertTrue(artifact.stale_for_head(result, bad))
+                self.assertTrue(artifact.stale_for_head(cast(Any, bad), HEAD_SHA))
+        # An artifact produced for one head can never pass for another.
+        other = _from_model(_model_payload(head_sha="d" * 40), head_sha="d" * 40)
+        self.assertTrue(artifact.stale_for_head(other, HEAD_SHA))
+
+    def test_generated_file_finding_dropped_and_unreviewed(self):
+        generated_diff = (
+            DIFF
+            + """diff --git a/gen/api.pb.go b/gen/api.pb.go
+index 1..2 100644
+--- a/gen/api.pb.go
++++ b/gen/api.pb.go
+@@ -1,1 +1,2 @@
+ keep
++added
+"""
+        )
+        payload = _model_payload(findings=[_finding(path="gen/api.pb.go", line=2, end_line=2)])
+        result = _from_model(payload, diff_map=parse_diff(generated_diff))
+        self.assertEqual(result["findings"], [])
+        self.assertEqual(result["dropped_findings"], [{"id": "F1", "reason": "line_not_in_diff"}])
+        self.assertIn("gen/api.pb.go", result["unreviewed"])
 
 
 if __name__ == "__main__":
