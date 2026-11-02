@@ -72,7 +72,7 @@ Exact examples:
 
 A non-empty environment value wins over `partners/config.json`; empty or whitespace-only values are ignored. `partners/config.json` stays local and gitignored either way - the variables only change where a value is resolved from, never where it is stored. There are no generic overrides for `models`, `fallback_models`, `generation` or `options`.
 
-The `auth` object may be omitted from a partner section when every needed secret comes from the environment; a non-object `auth` value is still rejected. To keep the variable names unambiguous, a config where two partner ids - or two auth keys of the loaded partner - normalize to the same token is rejected as `invalid_config`.
+The `auth` object may be omitted from a partner section when every needed secret comes from the environment; a non-object `auth` value is still rejected. To keep the variable names unambiguous, a config is rejected as `invalid_config` when two partner ids - or two auth keys of the loaded partner - normalize to the same token, or when any two `(partner_id, auth_key)` pairs across all configured partners would produce the same `QP_AUTH_` variable name.
 
 ## MCP client registration
 

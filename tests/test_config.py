@@ -294,6 +294,25 @@ class EnvOverrideTest(unittest.TestCase):
         self.assertNotIn("value-a", ctx.exception.message)
         self.assertNotIn("value-b", ctx.exception.message)
 
+    def test_cross_partner_auth_env_name_collision_is_invalid_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(
+                Path(tmp),
+                {
+                    "foo": _partner_section(auth={"bar_baz": "secret-a"}),
+                    "foo_bar": _partner_section(auth={"baz": "secret-b"}),
+                },
+            )
+            with self.assertRaises(PartnerError) as ctx:
+                load_partner_config("foo", path, environ={})
+        self.assertEqual(ctx.exception.code, "invalid_config")
+        self.assertIn("foo", ctx.exception.message)
+        self.assertIn("foo_bar", ctx.exception.message)
+        self.assertIn("bar_baz", ctx.exception.message)
+        self.assertIn("baz", ctx.exception.message)
+        self.assertNotIn("secret-a", ctx.exception.message)
+        self.assertNotIn("secret-b", ctx.exception.message)
+
     def test_os_environ_is_used_when_environ_is_not_injected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = _write_config(Path(tmp), {"local-openai-partner": _partner_section()})

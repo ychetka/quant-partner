@@ -135,6 +135,40 @@ def _env_token_collisions(names: list[str], what: str) -> None:
         seen[token] = name
 
 
+def _auth_env_name_collisions(partners: Mapping[str, Any]) -> None:
+    """Reject ``(partner_id, auth_key)`` pairs that share one ``QP_AUTH_`` env name.
+
+    Concatenating two normalized tokens can collide across partners even when
+    neither token collides on its own: ``foo`` + ``bar_baz`` and ``foo_bar``
+    + ``baz`` both yield ``QP_AUTH_FOO_BAR_BAZ``. Every configured partner's
+    known and declared auth keys are therefore checked together. A missing
+    ``auth`` is treated as ``{}``; a non-object ``auth`` is skipped because
+    loading that partner already rejects it. Only identifiers are reported,
+    never values.
+    """
+    seen: dict[str, tuple[str, str]] = {}
+    for pid, raw in partners.items():
+        auth = raw.get("auth", {}) if isinstance(raw, dict) else {}
+        if not isinstance(auth, dict):
+            auth = {}
+        auth_keys: list[Any] = list(_KNOWN_AUTH_KEYS)
+        for key in auth:
+            if key not in auth_keys:
+                auth_keys.append(key)
+        scope = _env_token(str(pid))
+        for key in auth_keys:
+            env_name = f"{_ENV_AUTH_PREFIX}{scope}_{_env_token(str(key))}"
+            pair = (str(pid), str(key))
+            other = seen.get(env_name)
+            if other is not None and other != pair:
+                raise invalid_config(
+                    "auth env name collision: "
+                    f"{other[0]}.{other[1]} and {pair[0]}.{pair[1]}"
+                    f" both map to {env_name}"
+                )
+            seen[env_name] = pair
+
+
 def _env_value(environ: Mapping[str, str], name: str) -> str:
     value = environ.get(name)
     if not isinstance(value, str):
@@ -199,6 +233,7 @@ def load_partner_config(
     data = _expect_mapping(data, "config root")
     partners = _expect_mapping(data.get("partners"), "partners")
     _env_token_collisions([str(pid) for pid in partners], "partner ids")
+    _auth_env_name_collisions(partners)
     raw = _expect_mapping(partners.get(partner_id), f"partners.{partner_id}")
     enabled = bool(raw.get("enabled", True))
     if not enabled:
