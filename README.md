@@ -142,6 +142,14 @@ Run unit tests:
 python3 -m unittest discover -s tests -v
 ```
 
+Run the static type checker:
+
+```bash
+uvx --from "pyright[nodejs]==1.1.414" pyright
+```
+
+CI runs this check in a separate `typecheck` job that is currently non-blocking (`continue-on-error: true`) until the known error baseline is fixed. Once the baseline is cleaned up, `continue-on-error` should be removed so the check becomes blocking.
+
 Run a local protocol smoke test:
 
 ```bash
