@@ -11,9 +11,43 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partners"))
 
+from backends.base import CompletionResult  # noqa: E402
 from core.config import load_skill  # noqa: E402
 from core.errors import PartnerError, sanitize  # noqa: E402
 from core.server import PartnerMCPServer  # noqa: E402
+
+
+class ExBackend:
+    """Fake backend exposing complete_ex with scripted model_used."""
+
+    def __init__(self, text="answer text", model_used=None):
+        self.text = text
+        self.model_used = model_used
+        self.calls = []
+
+    def list_models(self, refresh=False):
+        return []
+
+    def complete_ex(self, messages, *, system_prompt, model, generation):
+        self.calls.append(model)
+        return CompletionResult(text=self.text, model_used=self.model_used)
+
+    def complete(self, messages, *, system_prompt, model, generation):
+        return self.complete_ex(
+            messages, system_prompt=system_prompt, model=model, generation=generation
+        ).text
+
+
+class PlainBackend:
+    """Minimal fake without complete_ex; only the legacy complete call."""
+
+    def __init__(self, text="plain answer"):
+        self.text = text
+        self.calls = []
+
+    def complete(self, messages, *, system_prompt, model, generation):
+        self.calls.append(model)
+        return self.text
 
 
 class ServerTest(unittest.TestCase):
@@ -78,6 +112,98 @@ class ServerTest(unittest.TestCase):
 
     def test_secret_sanitizer(self):
         self.assertEqual(sanitize("token abc123 failed", ["abc123"]), "token [redacted] failed")
+
+    # -- ask_v2 ----------------------------------------------------------------
+
+    def test_ask_v2_tool_registered_with_same_schema(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        tools = {tool["name"]: tool for tool in server.tools()}
+        self.assertIn("ask_code_partner_v2", tools)
+        self.assertEqual(
+            tools["ask_code_partner_v2"]["inputSchema"],
+            tools["ask_code_partner"]["inputSchema"],
+        )
+
+    def test_product_ask_v2_registered(self):
+        server = PartnerMCPServer("gemini-product")
+        names = {tool["name"] for tool in server.tools()}
+        self.assertIn("ask_product_partner_v2", names)
+        self.assertNotIn("ask_code_partner_v2", names)
+
+    def test_ask_v2_reports_model_provenance(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="answer text", model_used="claude-sonnet-5")
+        payload = json.loads(server.call_tool("ask_code_partner_v2", {"question": "q?"}))
+        self.assertEqual(payload["partner_id"], "gh-copilot-partner")
+        self.assertEqual(payload["skill"], "software-architect")
+        self.assertEqual(payload["model_requested"], "claude-sonnet-5")
+        self.assertEqual(payload["model_used"], "claude-sonnet-5")
+        self.assertIs(payload["model_match"], True)
+        self.assertEqual(payload["text"], "answer text")
+
+    def test_ask_v2_model_override_is_model_requested(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(model_used="custom-model")
+        payload = json.loads(
+            server.call_tool("ask_code_partner_v2", {"question": "q?", "model": "custom-model"})
+        )
+        self.assertEqual(payload["model_requested"], "custom-model")
+        self.assertEqual(payload["model_used"], "custom-model")
+        self.assertIs(payload["model_match"], True)
+
+    def test_ask_v2_model_used_mismatch_reports_false(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(model_used="other-model")
+        payload = json.loads(server.call_tool("ask_code_partner_v2", {"question": "q?"}))
+        self.assertEqual(payload["model_requested"], "claude-sonnet-5")
+        self.assertEqual(payload["model_used"], "other-model")
+        self.assertIs(payload["model_match"], False)
+
+    def test_ask_v2_missing_model_used_is_null(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(model_used=None)
+        payload = json.loads(server.call_tool("ask_code_partner_v2", {"question": "q?"}))
+        self.assertIsNone(payload["model_used"])
+        self.assertIsNone(payload["model_match"])
+        self.assertEqual(payload["text"], "answer text")
+
+    def test_ask_v2_plain_backend_without_complete_ex(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = PlainBackend()
+        payload = json.loads(server.call_tool("ask_code_partner_v2", {"question": "q?"}))
+        self.assertEqual(payload["text"], "plain answer")
+        self.assertEqual(payload["model_requested"], "claude-sonnet-5")
+        self.assertIsNone(payload["model_used"])
+        self.assertIsNone(payload["model_match"])
+
+    def test_generic_ask_v2_alias_dispatches(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend()
+        payload = json.loads(server.call_tool("ask_partner_v2", {"question": "q?"}))
+        self.assertEqual(payload["partner_id"], "gh-copilot-partner")
+        self.assertEqual(payload["text"], "answer text")
+
+    def test_ask_v2_requires_question(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend()
+        with self.assertRaises(PartnerError) as ctx:
+            server.call_tool("ask_code_partner_v2", {})
+        self.assertEqual(ctx.exception.code, "invalid_request")
+        self.assertEqual(server._backend.calls, [])
+
+    def test_legacy_ask_and_dialog_output_unchanged(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="plain text answer")
+        self.assertEqual(
+            server.call_tool("ask_code_partner", {"question": "q?"}), "plain text answer"
+        )
+        self.assertEqual(
+            server.call_tool(
+                "ask_code_partner_dialog",
+                {"messages": [{"role": "user", "text": "hi"}]},
+            ),
+            "plain text answer",
+        )
 
 
 if __name__ == "__main__":
