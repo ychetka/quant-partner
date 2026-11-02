@@ -1,5 +1,6 @@
 {
   "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "_env_overrides": "QP_<PARTNER_ID>_AUTH_<AUTH_KEY> and QP_<PARTNER_ID>_MODEL environment variables override values from this file; see README.md",
   "version": 1,
   "partners": {
     "gh-copilot-partner": {

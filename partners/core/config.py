@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config.json"
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _PLACEHOLDERS = ("REPLACE", "TOKEN_HERE", "KEY_HERE", "YOUR_", "EXAMPLE")
+_ENV_PREFIX = "QP_"
+_KNOWN_AUTH_KEYS = ("github_oauth_token", "gemini_api_key", "api_key")
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ class PartnerConfig:
     harness_path: Path
     default_skill: str
     skills_root: str
-    auth: dict[str, Any]
+    auth: dict[str, Any] = field(repr=False)
     options: dict[str, Any]
     model: str
     models: dict[str, Any]
@@ -114,7 +117,57 @@ def _safe_relative_path(value: str, name: str) -> str:
     return str(path)
 
 
-def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerConfig:
+def _env_token(name: str) -> str:
+    """Uppercase a partner id or auth key for use in an environment variable name."""
+    return re.sub(r"[^A-Z0-9]", "_", name.upper())
+
+
+def _env_value(environ: Mapping[str, str], name: str) -> str:
+    value = environ.get(name)
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _apply_env_overrides(
+    partner_id: str,
+    auth: dict[str, Any],
+    model: str,
+    models: dict[str, Any],
+    environ: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """Overlay partner-scoped ``QP_`` env values on file config without mutating it.
+
+    A non-empty value wins over the file config; empty or whitespace-only
+    values are ignored. Auth overrides cover the known backend keys plus any
+    key already declared in the file auth object. A non-empty
+    ``QP_<PARTNER_ID>_MODEL`` also overlays ``models.default`` so that
+    ``PartnerConfig.default_model()`` sees it, while role-specific entries
+    such as ``models.utility`` and ``models.fallback`` are preserved.
+    """
+    env = os.environ if environ is None else environ
+    scope = _ENV_PREFIX + _env_token(partner_id)
+    auth_keys: list[str] = list(_KNOWN_AUTH_KEYS)
+    for key in auth:
+        if key not in auth_keys:
+            auth_keys.append(key)
+    merged_auth = dict(auth)
+    for key in auth_keys:
+        value = _env_value(env, f"{scope}_AUTH_{_env_token(str(key))}")
+        if value:
+            merged_auth[key] = value
+    merged_models = dict(models)
+    env_model = _env_value(env, f"{scope}_MODEL")
+    if env_model:
+        merged_models["default"] = env_model
+    return merged_auth, env_model or model, merged_models
+
+
+def load_partner_config(
+    partner_id: str,
+    path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> PartnerConfig:
     path = path or config_path()
     if not partner_id:
         raise invalid_config("PARTNER_ID is not set")
@@ -149,6 +202,13 @@ def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerCon
     timeout = raw.get("timeout_seconds", 240)
     if not isinstance(timeout, int) or timeout <= 0:
         raise invalid_config("timeout_seconds must be a positive integer")
+    auth, model, models = _apply_env_overrides(
+        partner_id,
+        auth,
+        _expect_string(raw.get("model"), "model", ""),
+        models,
+        environ,
+    )
 
     return PartnerConfig(
         partner_id=partner_id,
@@ -160,7 +220,7 @@ def load_partner_config(partner_id: str, path: Path | None = None) -> PartnerCon
         skills_root=skills_root,
         auth=auth,
         options=options,
-        model=_expect_string(raw.get("model"), "model", ""),
+        model=model,
         models=models,
         fallback_models=_string_list(raw.get("fallback_models"), "fallback_models"),
         generation=generation,
