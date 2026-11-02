@@ -12,6 +12,8 @@ from urllib.parse import urlencode
 from core.errors import PartnerError, invalid_config
 from core.http import get_json, post_json
 
+from .base import CompletionResult
+
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 _IPV4_PATCHED = False
 
@@ -70,6 +72,14 @@ class GeminiBackend:
             if model.get("name")
         )
 
+    @staticmethod
+    def _response_model(out: dict[str, Any]) -> str | None:
+        """Served model from ``modelVersion`` stripped of ``models/``; absent means ``None``."""
+        version = out.get("modelVersion")
+        if not isinstance(version, str) or not version:
+            return None
+        return version.removeprefix("models/") or None
+
     def complete(
         self,
         messages: list[dict[str, str]],
@@ -78,6 +88,18 @@ class GeminiBackend:
         model: str,
         generation: dict[str, Any],
     ) -> str:
+        return self.complete_ex(
+            messages, system_prompt=system_prompt, model=model, generation=generation
+        ).text
+
+    def complete_ex(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+    ) -> CompletionResult:
         self._require_key()
         contents = []
         for message in messages:
@@ -115,4 +137,4 @@ class GeminiBackend:
                 else "no candidates"
             )
             raise PartnerError("backend_error", f"Gemini returned an empty response ({reason})")
-        return text
+        return CompletionResult(text=text, model_used=self._response_model(out))

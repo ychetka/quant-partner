@@ -11,6 +11,7 @@ One Python entrypoint runs multiple partner instances. Each instance has its own
 
 - `gh-copilot-partner` - code, architecture, stack, review and debugging consultations through direct GitHub Copilot API access.
 - `gemini-product` - product management, UX architecture and prioritization through the Gemini API.
+- `code-reviewer` - advisory second-opinion review of unified diffs with strict model provenance.
 - `openai-compatible` - optional generic backend for any OpenAI-compatible endpoint.
 
 ## MVP architecture
@@ -35,6 +36,7 @@ partners/
   config.json                     local config with secrets, not committed
   core/                           config, prompting, errors, JSON-RPC, tool dispatch
   backends/                       copilot-direct, gemini, openai-compatible
+  review/                         advisory review service, artifact schema, cache, provenance
   harness/                        base partner contracts
   skills/<partner>/<skill>/       manifest.json + prompt.txt
 tools/
@@ -121,7 +123,27 @@ Common tools:
 - `ask_product_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_product_partner_dialog(messages, skill?, role?, model?)`
 
+`code-reviewer` tools (`toolset: "review"`):
+
+- `list_reviewer_models()`
+- `review_code(head_sha, base_sha, diff, model, strict_model?, context?, files?, review_id?)`
+
 Dialog tools are stateless: pass the whole message history in each call.
+
+## Advisory code review
+
+The `code-reviewer` partner exposes a strict review toolset instead of the conversational `ask_*` tools.
+
+- `list_reviewer_models()` returns the allowlisted model aliases, their pinned backend model IDs and the configured input limits. It is metadata only and performs no provider access.
+- `review_code` runs one advisory second-opinion review and always returns a schema-valid JSON artifact (`status` is `ok`, `rejected` or `error`).
+
+Required `review_code` arguments: `head_sha` and `base_sha` (40-hex SHAs echoed into the artifact), `diff` (a unified diff) and `model`. The `model` argument must be an alias from `options.review.allowed_models` - free-form provider IDs are rejected before any backend access.
+
+With `strict_model` (default `true`) the call fails closed unless live model discovery confirms the pinned backend model and the provider-reported `model_used` matches it; the artifact `provenance` records `model_alias`, `model_requested`, `model_used`, `model_match` and `discovery_confirmed`. Setting `strict_model: false` downgrades a mismatch to a warning with `model_match: false`.
+
+Optional `files` entries are bounded extra context: a repo-relative path string acts as a label only, while `{name, content}` objects attach inline text. All file contents are caller-supplied; the server never reads the filesystem.
+
+The artifact is advisory only (`advisory: true`): it never authorizes a merge and never publishes comments or reviews anywhere. Input validation, path checks and outbound secret scanning all run before any provider access, so oversized, unsafe or secret-like input is rejected without a backend call. Only `status=ok` artifacts are cached, keyed by an `idempotency_key` derived from the review inputs.
 
 ## Harness and skills
 

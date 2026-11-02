@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 from core.errors import PartnerError, invalid_config
 from core.http import get_json, post_json
 
+from .base import CompletionResult
+
 TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
 
 
@@ -196,6 +198,12 @@ class CopilotDirectBackend:
         return str(message.get("content") or choices[0].get("text") or "").strip()
 
     @staticmethod
+    def _response_model(out: dict[str, Any]) -> str | None:
+        """Served-model id from response metadata; ``None`` when absent."""
+        model = out.get("model")
+        return model if isinstance(model, str) and model else None
+
+    @staticmethod
     def _responses_text(out: dict[str, Any]) -> str:
         if isinstance(out.get("output_text"), str):
             return out["output_text"].strip()
@@ -214,7 +222,7 @@ class CopilotDirectBackend:
         model: str,
         generation: dict[str, Any],
         force_refresh: bool = False,
-    ) -> str:
+    ) -> CompletionResult:
         api_base, session = self._session(force_refresh)
         if endpoint == "responses":
             payload = self._responses_payload(messages, system_prompt, model, generation)
@@ -227,7 +235,8 @@ class CopilotDirectBackend:
             timeout=self.timeout,
             secrets=self.secrets,
         )
-        return self._responses_text(out) if endpoint == "responses" else self._chat_text(out)
+        text = self._responses_text(out) if endpoint == "responses" else self._chat_text(out)
+        return CompletionResult(text=text, model_used=self._response_model(out))
 
     def _complete_with_auth_retry(
         self,
@@ -236,7 +245,7 @@ class CopilotDirectBackend:
         system_prompt: str,
         model: str,
         generation: dict[str, Any],
-    ) -> str:
+    ) -> CompletionResult:
         try:
             return self._complete_once(endpoint, messages, system_prompt, model, generation)
         except PartnerError as e:
@@ -254,6 +263,18 @@ class CopilotDirectBackend:
         model: str,
         generation: dict[str, Any],
     ) -> str:
+        return self.complete_ex(
+            messages, system_prompt=system_prompt, model=model, generation=generation
+        ).text
+
+    def complete_ex(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        system_prompt: str,
+        model: str,
+        generation: dict[str, Any],
+    ) -> CompletionResult:
         if not model:
             raise PartnerError("invalid_request", "model is empty")
         try:
@@ -277,7 +298,7 @@ class CopilotDirectBackend:
         ):
             endpoint = "responses"
         try:
-            text = self._complete_with_auth_retry(
+            result = self._complete_with_auth_retry(
                 endpoint, messages, system_prompt, model, generation
             )
         except PartnerError as e:
@@ -286,11 +307,11 @@ class CopilotDirectBackend:
                 and endpoint == "chat/completions"
                 and e.code in ("unsupported_api_for_model", "backend_error")
             ):
-                text = self._complete_with_auth_retry(
+                result = self._complete_with_auth_retry(
                     "responses", messages, system_prompt, model, generation
                 )
             else:
                 raise
-        if not text:
+        if not result.text:
             raise PartnerError("backend_error", "Copilot returned an empty response")
-        return text
+        return result
