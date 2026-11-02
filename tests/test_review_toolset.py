@@ -851,6 +851,75 @@ class ReviewToolsetTest(unittest.TestCase):
             artifact = json.loads(server._review_code(valid_args()))
         self._assert_error(artifact, "error", "internal_error")
 
+    # -- skill selection -------------------------------------------------------------
+
+    def test_review_tool_schema_documents_skill(self):
+        server = self._server()
+        tool = next(t for t in server.tools() if t["name"] == "review_code")
+        props = tool["inputSchema"]["properties"]
+        self.assertIn("skill", props)
+        self.assertNotIn("skill", tool["inputSchema"]["required"])
+
+    def test_list_partner_skills_surfaces_security_reviewer(self):
+        server = self._server()
+        text = server.call_tool("list_partner_skills", {})
+        self.assertIn("code-reviewer", text)
+        self.assertIn("security-reviewer", text)
+
+    def test_review_code_skill_arg_selects_named_skill(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        artifact = self._artifact(self._server(backend), valid_args(skill="security-reviewer"))
+        self.assertEqual(artifact["status"], "ok", artifact)
+        prompt = backend.complete_calls[0]["system_prompt"]
+        self.assertIn("Security Reviewer", prompt)
+        records = self._log_records()
+        self.assertEqual(records[0]["skill"], "security-reviewer")
+
+    def test_review_code_default_skill_is_used_without_arg(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        prompt = backend.complete_calls[0]["system_prompt"]
+        self.assertIn("Code Reviewer", prompt)
+        self.assertNotIn("Security Reviewer", prompt)
+        records = self._log_records()
+        self.assertEqual(records[0]["skill"], "code-reviewer")
+
+    def test_unknown_skill_fails_closed_before_provider_access(self):
+        backend = FakeBackend()
+        server = self._server(backend)
+        artifact = self._artifact(server, valid_args(skill="no-such-skill"))
+        self._assert_error(artifact, "error", "invalid_request")
+        self.assertEqual(backend.list_calls, 0)
+        self.assertEqual(backend.complete_calls, [])
+        # The failure still carries the deterministic early-bound key.
+        again = self._artifact(server, valid_args(skill="no-such-skill"))
+        self.assertEqual(again["errors"][0]["code"], "invalid_request")
+        self.assertRegex(artifact["idempotency_key"], r"^[0-9a-f]{64}$")
+        self.assertEqual(artifact["idempotency_key"], again["idempotency_key"])
+
+    def test_non_string_skill_rejected(self):
+        backend = FakeBackend()
+        artifact = self._artifact(self._server(backend), valid_args(skill=7))
+        self._assert_error(artifact, "error", "invalid_request")
+        self.assertEqual(backend.list_calls, 0)
+
+    def test_skill_joins_idempotency_key_material(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        server = self._server(backend)
+        first = self._artifact(server, valid_args())
+        second = self._artifact(server, valid_args(skill="security-reviewer"))
+        third = self._artifact(server, valid_args())
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(second["status"], "ok")
+        # Same diff and model under another skill gets a different key and
+        # no cross-skill cache hit; the default-skill repeat still hits.
+        self.assertNotEqual(first["idempotency_key"], second["idempotency_key"])
+        self.assertFalse(second["cached"])
+        self.assertTrue(third["cached"])
+        self.assertEqual(third["idempotency_key"], first["idempotency_key"])
+        self.assertEqual(len(backend.complete_calls), 2)
+
     # -- logging -------------------------------------------------------------------
 
     def test_one_structured_log_line_without_content(self):

@@ -223,6 +223,7 @@ class _Call:
     base_sha: str = "0" * 40
     model_alias: str = ""
     model_requested: str = ""
+    skill: str = ""
     strict_model: bool = True
     discovery_confirmed: bool = False
     model_used: str = ""
@@ -370,6 +371,7 @@ class ReviewService:
             model_alias=call.model_alias,
             model_requested=call.model_requested,
             strict_model=call.strict_model,
+            skill=call.skill,
             head_sha=call.head_sha,
             base_sha=call.base_sha,
             diff=diff,
@@ -409,6 +411,7 @@ class ReviewService:
                 "backend": self.cfg.backend,
                 "model_alias": call.model_alias,
                 "model_requested": call.model_requested,
+                "skill": call.skill,
                 "strict_model": call.strict_model,
                 "discovery_confirmed": call.discovery_confirmed,
                 "model_used": call.model_used,
@@ -679,8 +682,29 @@ class ReviewService:
             return fail(e.status, e.code, e.message)
         call.model_alias = resolved.alias
         call.model_requested = resolved.backend_model
+
+        # Resolve an optional caller-named review skill before the cache
+        # lookup so an unknown name fails closed without provider access.
+        # A blank value falls back to the configured default skill.
+        skill_arg = args.get("skill")
+        if skill_arg is not None and not isinstance(skill_arg, str):
+            return fail("error", "invalid_request", "skill must be a string")
+        if isinstance(skill_arg, str) and skill_arg.strip():
+            try:
+                skill = load_skill(self.cfg, skill_arg)
+            except PartnerError:
+                return fail(
+                    "error",
+                    "invalid_request",
+                    f"requested review skill is not installed: {skill_arg.strip()[:128]}",
+                )
+        else:
+            skill = None
+        call.skill = skill.name if skill is not None else self.cfg.default_skill
         # Rebind: the canonical cache key also covers the pinned backend
-        # model, which is known only after alias resolution.
+        # model and the resolved skill name, which are known only after
+        # resolution, so identical inputs under different skills never
+        # share a cache entry.
         self._bind_key(call, **key_material)
 
         cache = self._cache(opts)
@@ -700,8 +724,10 @@ class ReviewService:
                 pass
 
         # Load prompt material before any provider access so a broken
-        # skill or harness fails locally, not after a discovery call.
-        skill = load_skill(self.cfg)
+        # skill or harness fails locally, not after a discovery call. A
+        # caller-named skill was already loaded during resolution above.
+        if skill is None:
+            skill = load_skill(self.cfg)
         system_prompt = compose_system_prompt(self.cfg, skill)
         generation = dict(self.cfg.generation)
         generation.update(skill.generation)

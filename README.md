@@ -131,7 +131,7 @@ The `*_v2` ask tools accept the same arguments as the base ask tools but return 
 `code-reviewer` tools (`toolset: "review"`):
 
 - `list_reviewer_models()`
-- `review_code(head_sha, base_sha, diff, model, strict_model?, context?, files?, review_id?)`
+- `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)`
 
 Dialog tools are stateless: pass the whole message history in each call.
 
@@ -145,6 +145,8 @@ The `code-reviewer` partner exposes a strict review toolset instead of the conve
 Required `review_code` arguments: `head_sha` and `base_sha` (40-hex SHAs echoed into the artifact), `diff` (a unified diff) and `model`. The `model` argument must be an alias from `options.review.allowed_models` - free-form provider IDs are rejected before any backend access.
 
 With `strict_model` (default `true`) the call fails closed unless live model discovery confirms the pinned backend model and the provider-reported `model_used` matches it; the artifact `provenance` records `model_alias`, `model_requested`, `model_used`, `model_match` and `discovery_confirmed`. Setting `strict_model: false` downgrades a mismatch to a warning with `model_match: false`.
+
+The optional `skill` argument selects an installed review skill pack from `list_partner_skills`; when omitted, the configured `default_skill` is used. An unknown skill name fails closed with `status=error`, `invalid_request` before any provider access. The resolved skill name participates in the `idempotency_key` material, so identical inputs under different skills never share a cache entry. The `security-reviewer` pack installed under `skills/code-reviewer/` performs an advisory defensive security review of the supplied diff.
 
 Optional `files` entries are bounded extra context: a repo-relative path string acts as a label only, while `{name, content}` objects attach inline text. All file contents are caller-supplied; the server never reads the filesystem.
 
@@ -187,6 +189,8 @@ Then point `options.openai.base_url` at `http://127.0.0.1:4143/v1`. The `openai-
 Prompt composition order: base harness, skill prompt, then the caller's question context. `skill` can be passed per tool call; otherwise `default_skill` from the config is used.
 
 Set `skills_root` in a partner config to share a skill directory across partner IDs. The example `local-openai-partner` reuses `skills/gh-copilot-partner`.
+
+The `code-reviewer` partner ships two packs: `code-reviewer` (default general review) and `security-reviewer` (advisory defensive security review: injection, authn/authz gaps, secret handling, unsafe deserialization, path traversal, SSRF, crypto misuse, weak randomness and supply-chain red flags). Select one per call through the `skill` argument of `review_code`.
 
 ## Error contract
 
