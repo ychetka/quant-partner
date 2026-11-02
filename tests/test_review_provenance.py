@@ -4,6 +4,7 @@
 import sys
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partners"))
@@ -70,6 +71,34 @@ class DiscoveryTest(unittest.TestCase):
         resolved = resolve_alias("opus", allowed)
         with self.assertRaises(ProvenanceError) as ctx:
             confirm_discovery(resolved, ["claude-sonnet-5.5"])
+        self.assertEqual(ctx.exception.code, "model_unconfirmed")
+
+    def test_malformed_or_ambiguous_discovery_fails_closed(self):
+        # A non-iterable or wrongly shaped catalog is ambiguous: the
+        # pinned model cannot be confirmed, so the check must raise
+        # model_unconfirmed rather than an internal error.
+        resolved = resolve_alias("claude", ALLOWED)
+        malformed = (
+            42,
+            4.2,
+            object(),
+            {"models": ["claude-sonnet-5.5"]},
+        )
+        for discovered in malformed:
+            with self.subTest(discovered=repr(discovered)):
+                with self.assertRaises(ProvenanceError) as ctx:
+                    confirm_discovery(resolved, cast(Any, discovered))
+                self.assertEqual(ctx.exception.code, "model_unconfirmed")
+                self.assertEqual(ctx.exception.status, "rejected")
+
+    def test_discovery_iterable_that_raises_fails_closed(self):
+        def exploding():
+            yield "claude-sonnet-5.5"
+            raise RuntimeError("stream broke")
+
+        resolved = resolve_alias("claude", ALLOWED)
+        with self.assertRaises(ProvenanceError) as ctx:
+            confirm_discovery(resolved, exploding())
         self.assertEqual(ctx.exception.code, "model_unconfirmed")
 
 

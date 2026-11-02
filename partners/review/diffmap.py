@@ -7,6 +7,11 @@ Only RIGHT-side (new file) line numbers are tracked, because findings
 anchor to the head revision. Hunk body counts are validated against the
 ``@@ -a,b +c,d @@`` declarations; a file whose counts do not add up is
 treated as unanchorable so findings can never bind to a misparsed diff.
+
+Generated outputs are unanchorable too: reviewing machine-written code
+line-by-line wastes findings, so sections carrying an explicit
+generated-code marker or a clearly generated file name are marked
+``is_generated`` and surface in ``unreviewed``.
 """
 
 from __future__ import annotations
@@ -36,6 +41,46 @@ _EXTENDED_HEADER_PREFIXES = (
     "similarity index",
     "dissimilarity index",
 )
+
+# Explicit generated-code markers searched (case-insensitively) inside
+# hunk body lines. The list covers the common generator banners: Go's
+# "Code generated ... DO NOT EDIT.", protobuf, GraphQL codegen, and
+# generic auto-generated notices.
+_GENERATED_MARKERS = (
+    "code generated",
+    "do not edit",
+    "@generated",
+    "auto-generated",
+    "automatically generated",
+)
+
+# File names that conventionally carry generated output; basenames are
+# compared lowercased.
+_GENERATED_BASENAMES = frozenset(
+    {
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "cargo.lock",
+        "go.sum",
+    }
+)
+
+
+def _generated_name(path: str) -> bool:
+    """True for file names that conventionally carry generated output."""
+    name = path.rsplit("/", 1)[-1].lower()
+    if name in _GENERATED_BASENAMES:
+        return True
+    if ".generated." in name or ".pb." in name:
+        return True
+    return name.endswith(".min.js")
+
+
+def _generated_marker(line_content: str) -> bool:
+    """True when a hunk body line carries an explicit generated marker."""
+    lowered = line_content.lower()
+    return any(marker in lowered for marker in _GENERATED_MARKERS)
 
 
 def _c_unescape(text: str) -> str:
@@ -101,6 +146,7 @@ class FileDiff:
     is_deleted: bool = False
     is_rename: bool = False
     is_binary: bool = False
+    is_generated: bool = False
     valid: bool = True
     saw_hunks: bool = False
     saw_plus: bool = False
@@ -119,7 +165,13 @@ class FileDiff:
     @property
     def anchorable(self) -> bool:
         """True when RIGHT-side lines can safely anchor findings."""
-        return self.valid and not self.is_deleted and not self.is_binary and bool(self.right_lines)
+        return (
+            self.valid
+            and not self.is_deleted
+            and not self.is_binary
+            and not self.is_generated
+            and bool(self.right_lines)
+        )
 
 
 class DiffMap:
@@ -207,6 +259,8 @@ def parse_diff(text: str) -> DiffMap:
         nonlocal current
         close_hunk()
         if current is not None:
+            if _generated_name(current.reported_path):
+                current.is_generated = True
             result.add(current)
         current = None
 
@@ -241,6 +295,8 @@ def parse_diff(text: str) -> DiffMap:
         if in_hunk:
             if line.startswith("\\"):
                 continue  # "\ No newline at end of file" marker consumes nothing
+            if line and _generated_marker(line[1:]):
+                current.is_generated = True
             if line == "":
                 # Some producers drop the leading space on empty context lines.
                 current.context.add(right_no)

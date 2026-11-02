@@ -90,7 +90,16 @@ def confirm_discovery(resolved: ResolvedModel, discovered: Iterable[str] | None)
             "model_unconfirmed",
             f"live model discovery unavailable; cannot confirm {resolved.backend_model}",
         )
-    available = {model for model in discovered if isinstance(model, str)}
+    try:
+        available = {model for model in discovered if isinstance(model, str)}
+    except Exception:
+        # A non-iterable or otherwise malformed catalog is ambiguous:
+        # fail closed instead of surfacing an internal error.
+        raise ProvenanceError(
+            "model_unconfirmed",
+            "live model discovery returned a malformed catalog; "
+            f"cannot confirm {resolved.backend_model}",
+        ) from None
     if resolved.backend_model not in available:
         raise ProvenanceError(
             "model_unconfirmed",
