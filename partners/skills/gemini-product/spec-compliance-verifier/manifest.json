@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "spec-compliance-verifier",
+  "description": "Advisory verification of a supplied spec, acceptance criteria, diff summary and code excerpts for product/spec drift.",
+  "when_to_use": "Use to check an implementation diff against spec text and acceptance criteria; returns a strict JSON advisory artifact, never a merge decision.",
+  "generation": {
+    "temperature": 0.1
+  },
+  "version": 1
+}
