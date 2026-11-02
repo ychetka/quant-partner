@@ -2,18 +2,22 @@
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
 import json
+import os
 import sys
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partners"))
 
 from core.config import (  # noqa: E402
+    DEFAULT_CONFIG_PATH,
     compose_system_prompt,
+    config_path,
     list_skills,
     load_partner_config,
     load_skill,
@@ -127,7 +131,7 @@ class EnvOverrideTest(unittest.TestCase):
         cfg = self._load(
             "gh-copilot-partner",
             _partner_section(),
-            {"QP_GH_COPILOT_PARTNER_AUTH_GITHUB_OAUTH_TOKEN": "env-oauth-token"},
+            {"QP_AUTH_GH_COPILOT_PARTNER_GITHUB_OAUTH_TOKEN": "env-oauth-token"},
         )
         self.assertEqual(cfg.auth["github_oauth_token"], "env-oauth-token")
         self.assertTrue(cfg.auth_configured())
@@ -136,7 +140,7 @@ class EnvOverrideTest(unittest.TestCase):
         cfg = self._load(
             "local-openai-partner",
             _partner_section(auth={"api_key": "file-key"}),
-            {"QP_LOCAL_OPENAI_PARTNER_AUTH_API_KEY": "env-key"},
+            {"QP_AUTH_LOCAL_OPENAI_PARTNER_API_KEY": "env-key"},
         )
         self.assertEqual(cfg.auth["api_key"], "env-key")
 
@@ -144,7 +148,7 @@ class EnvOverrideTest(unittest.TestCase):
         cfg = self._load(
             "local-openai-partner",
             _partner_section(auth={"custom_header": "file-value"}),
-            {"QP_LOCAL_OPENAI_PARTNER_AUTH_CUSTOM_HEADER": "env-value"},
+            {"QP_AUTH_LOCAL_OPENAI_PARTNER_CUSTOM_HEADER": "env-value"},
         )
         self.assertEqual(cfg.auth["custom_header"], "env-value")
 
@@ -152,7 +156,7 @@ class EnvOverrideTest(unittest.TestCase):
         cfg = self._load(
             "local-openai-partner",
             _partner_section(auth={"api_key": "file-key"}),
-            {"QP_LOCAL_OPENAI_PARTNER_AUTH_SOMETHING_ELSE": "env-value"},
+            {"QP_AUTH_LOCAL_OPENAI_PARTNER_SOMETHING_ELSE": "env-value"},
         )
         self.assertNotIn("something_else", cfg.auth)
         self.assertEqual(cfg.auth["api_key"], "file-key")
@@ -161,7 +165,7 @@ class EnvOverrideTest(unittest.TestCase):
         cfg = self._load(
             "gh-copilot-partner",
             _partner_section(),
-            {"QP_GH_COPILOT_PARTNER_MODEL": "env-model"},
+            {"QP_MODEL_GH_COPILOT_PARTNER": "env-model"},
         )
         self.assertEqual(cfg.model, "env-model")
         self.assertEqual(cfg.default_model(), "env-model")
@@ -176,7 +180,7 @@ class EnvOverrideTest(unittest.TestCase):
                     "fallback": ["file-fallback"],
                 }
             ),
-            {"QP_GEMINI_PRODUCT_MODEL": "env-model"},
+            {"QP_MODEL_GEMINI_PRODUCT": "env-model"},
         )
         self.assertEqual(cfg.model, "env-model")
         self.assertEqual(cfg.default_model(), "env-model")
@@ -198,8 +202,8 @@ class EnvOverrideTest(unittest.TestCase):
             "local-openai-partner",
             _partner_section(auth={"api_key": "file-key"}),
             {
-                "QP_LOCAL_OPENAI_PARTNER_AUTH_API_KEY": "   ",
-                "QP_LOCAL_OPENAI_PARTNER_MODEL": "",
+                "QP_AUTH_LOCAL_OPENAI_PARTNER_API_KEY": "   ",
+                "QP_MODEL_LOCAL_OPENAI_PARTNER": "",
             },
         )
         self.assertEqual(cfg.auth["api_key"], "file-key")
@@ -210,8 +214,8 @@ class EnvOverrideTest(unittest.TestCase):
             "gh-copilot-partner",
             _partner_section(auth={"api_key": "file-key"}),
             {
-                "QP_GEMINI_PRODUCT_AUTH_GEMINI_API_KEY": "env-key",
-                "QP_GEMINI_PRODUCT_MODEL": "env-model",
+                "QP_AUTH_GEMINI_PRODUCT_GEMINI_API_KEY": "env-key",
+                "QP_MODEL_GEMINI_PRODUCT": "env-model",
             },
         )
         self.assertNotIn("gemini_api_key", cfg.auth)
@@ -222,7 +226,7 @@ class EnvOverrideTest(unittest.TestCase):
         cfg = self._load(
             "gh-copilot-partner",
             _partner_section(auth={"api_key": "file-secret-value"}),
-            {"QP_GH_COPILOT_PARTNER_AUTH_GITHUB_OAUTH_TOKEN": "env-secret-value"},
+            {"QP_AUTH_GH_COPILOT_PARTNER_GITHUB_OAUTH_TOKEN": "env-secret-value"},
         )
         text = repr(cfg)
         self.assertNotIn("file-secret-value", text)
@@ -237,6 +241,86 @@ class EnvOverrideTest(unittest.TestCase):
         )
         self.assertEqual(cfg.auth["api_key"], "file-key")
         self.assertEqual(cfg.model, "file-model")
+
+    def test_missing_auth_allows_env_only_auth(self):
+        section = _partner_section()
+        del section["auth"]
+        cfg = self._load(
+            "local-openai-partner",
+            section,
+            {"QP_AUTH_LOCAL_OPENAI_PARTNER_API_KEY": "env-key"},
+        )
+        self.assertEqual(cfg.auth["api_key"], "env-key")
+        self.assertTrue(cfg.auth_configured())
+
+    def test_missing_auth_without_env_is_empty(self):
+        section = _partner_section()
+        del section["auth"]
+        cfg = self._load("local-openai-partner", section, {})
+        self.assertEqual(cfg.auth, {})
+        self.assertFalse(cfg.auth_configured())
+
+    def test_non_object_auth_is_invalid_config(self):
+        with self.assertRaises(PartnerError) as ctx:
+            self._load("local-openai-partner", _partner_section(auth="nope"), {})
+        self.assertEqual(ctx.exception.code, "invalid_config")
+
+    def test_partner_id_env_token_collision_is_invalid_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(
+                Path(tmp),
+                {
+                    "foo-bar": _partner_section(),
+                    "foo_bar": _partner_section(),
+                },
+            )
+            with self.assertRaises(PartnerError) as ctx:
+                load_partner_config("foo-bar", path, environ={})
+        self.assertEqual(ctx.exception.code, "invalid_config")
+        self.assertIn("foo-bar", ctx.exception.message)
+        self.assertIn("foo_bar", ctx.exception.message)
+        self.assertNotIn("file-model", ctx.exception.message)
+
+    def test_auth_key_env_token_collision_is_invalid_config(self):
+        with self.assertRaises(PartnerError) as ctx:
+            self._load(
+                "local-openai-partner",
+                _partner_section(auth={"my-key": "value-a", "my_key": "value-b"}),
+                {},
+            )
+        self.assertEqual(ctx.exception.code, "invalid_config")
+        self.assertIn("my-key", ctx.exception.message)
+        self.assertIn("my_key", ctx.exception.message)
+        self.assertNotIn("value-a", ctx.exception.message)
+        self.assertNotIn("value-b", ctx.exception.message)
+
+    def test_os_environ_is_used_when_environ_is_not_injected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(Path(tmp), {"local-openai-partner": _partner_section()})
+            with patch.dict(
+                os.environ,
+                {
+                    "QP_AUTH_LOCAL_OPENAI_PARTNER_API_KEY": "env-key",
+                    "QP_MODEL_LOCAL_OPENAI_PARTNER": "env-model",
+                },
+                clear=True,
+            ):
+                cfg = load_partner_config("local-openai-partner", path)
+        self.assertEqual(cfg.auth["api_key"], "env-key")
+        self.assertEqual(cfg.model, "env-model")
+
+    def test_config_path_uses_injected_environ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            custom = Path(tmp) / "custom.json"
+            self.assertEqual(config_path({"PARTNER_CONFIG": str(custom)}), custom)
+            self.assertEqual(config_path({}), DEFAULT_CONFIG_PATH)
+
+    def test_load_partner_config_reads_partner_config_from_environ(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write_config(Path(tmp), {"local-openai-partner": _partner_section()})
+            cfg = load_partner_config("local-openai-partner", environ={"PARTNER_CONFIG": str(path)})
+        self.assertEqual(cfg.config_path, path)
+        self.assertEqual(cfg.backend, "openai-compatible")
 
 
 if __name__ == "__main__":

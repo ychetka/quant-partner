@@ -19,7 +19,8 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config.json"
 _SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _PLACEHOLDERS = ("REPLACE", "TOKEN_HERE", "KEY_HERE", "YOUR_", "EXAMPLE")
-_ENV_PREFIX = "QP_"
+_ENV_AUTH_PREFIX = "QP_AUTH_"
+_ENV_MODEL_PREFIX = "QP_MODEL_"
 _KNOWN_AUTH_KEYS = ("github_oauth_token", "gemini_api_key", "api_key")
 
 
@@ -84,8 +85,9 @@ def is_placeholder(value: str) -> bool:
     return not value or any(marker in upper for marker in _PLACEHOLDERS)
 
 
-def config_path() -> Path:
-    return Path(os.environ.get("PARTNER_CONFIG", str(DEFAULT_CONFIG_PATH))).expanduser()
+def config_path(environ: Mapping[str, str] | None = None) -> Path:
+    env = os.environ if environ is None else environ
+    return Path(env.get("PARTNER_CONFIG", str(DEFAULT_CONFIG_PATH))).expanduser()
 
 
 def _expect_mapping(value: Any, name: str) -> dict[str, Any]:
@@ -122,6 +124,17 @@ def _env_token(name: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", name.upper())
 
 
+def _env_token_collisions(names: list[str], what: str) -> None:
+    """Reject names that normalize to the same env token, naming only the names."""
+    seen: dict[str, str] = {}
+    for name in names:
+        token = _env_token(name)
+        other = seen.get(token)
+        if other is not None and other != name:
+            raise invalid_config(f"{what} normalize to the same env token: {other} and {name}")
+        seen[token] = name
+
+
 def _env_value(environ: Mapping[str, str], name: str) -> str:
     value = environ.get(name)
     if not isinstance(value, str):
@@ -136,28 +149,30 @@ def _apply_env_overrides(
     models: dict[str, Any],
     environ: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
-    """Overlay partner-scoped ``QP_`` env values on file config without mutating it.
+    """Overlay ``QP_AUTH_``/``QP_MODEL_`` env values on file config without mutating it.
 
     A non-empty value wins over the file config; empty or whitespace-only
-    values are ignored. Auth overrides cover the known backend keys plus any
-    key already declared in the file auth object. A non-empty
-    ``QP_<PARTNER_ID>_MODEL`` also overlays ``models.default`` so that
-    ``PartnerConfig.default_model()`` sees it, while role-specific entries
-    such as ``models.utility`` and ``models.fallback`` are preserved.
+    values are ignored. Auth overrides use ``QP_AUTH_<PARTNER_ID>_<AUTH_KEY>``
+    and cover the known backend keys plus any key already declared in the
+    file auth object. A non-empty ``QP_MODEL_<PARTNER_ID>`` also overlays
+    ``models.default`` so that ``PartnerConfig.default_model()`` sees it,
+    while role-specific entries such as ``models.utility`` and
+    ``models.fallback`` are preserved.
     """
     env = os.environ if environ is None else environ
-    scope = _ENV_PREFIX + _env_token(partner_id)
+    scope = _env_token(partner_id)
     auth_keys: list[str] = list(_KNOWN_AUTH_KEYS)
     for key in auth:
         if key not in auth_keys:
             auth_keys.append(key)
+    _env_token_collisions([str(key) for key in auth_keys], "auth keys")
     merged_auth = dict(auth)
     for key in auth_keys:
-        value = _env_value(env, f"{scope}_AUTH_{_env_token(str(key))}")
+        value = _env_value(env, f"{_ENV_AUTH_PREFIX}{scope}_{_env_token(str(key))}")
         if value:
             merged_auth[key] = value
     merged_models = dict(models)
-    env_model = _env_value(env, f"{scope}_MODEL")
+    env_model = _env_value(env, f"{_ENV_MODEL_PREFIX}{scope}")
     if env_model:
         merged_models["default"] = env_model
     return merged_auth, env_model or model, merged_models
@@ -168,7 +183,7 @@ def load_partner_config(
     path: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> PartnerConfig:
-    path = path or config_path()
+    path = path or config_path(environ)
     if not partner_id:
         raise invalid_config("PARTNER_ID is not set")
     try:
@@ -183,6 +198,7 @@ def load_partner_config(
 
     data = _expect_mapping(data, "config root")
     partners = _expect_mapping(data.get("partners"), "partners")
+    _env_token_collisions([str(pid) for pid in partners], "partner ids")
     raw = _expect_mapping(partners.get(partner_id), f"partners.{partner_id}")
     enabled = bool(raw.get("enabled", True))
     if not enabled:
@@ -195,7 +211,7 @@ def load_partner_config(
     if not isinstance(skills_root_raw, str):
         raise invalid_config("skills_root must be a string")
     skills_root = _safe_relative_path(skills_root_raw, "skills_root") if skills_root_raw else ""
-    auth = _expect_mapping(raw.get("auth"), "auth")
+    auth = _expect_mapping(raw.get("auth", {}), "auth")
     generation = _expect_mapping(raw.get("generation", {}), "generation")
     models = _expect_mapping(raw.get("models", {}), "models")
     options = _expect_mapping(raw.get("options", {}), "options")
