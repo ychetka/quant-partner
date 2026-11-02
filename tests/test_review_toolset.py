@@ -116,6 +116,27 @@ class FakeBackend:
         return self.complete_ex(messages, **kwargs).text
 
 
+class ScriptedBackend(FakeBackend):
+    """Returns queued outcomes one per call: str text, CompletionResult or Exception."""
+
+    def __init__(self, scripted, **kwargs):
+        super().__init__(**kwargs)
+        self.scripted = list(scripted)
+
+    def complete_ex(self, messages, *, system_prompt, model, generation):
+        self.complete_calls.append(
+            {"model": model, "system_prompt": system_prompt, "messages": messages}
+        )
+        if self.complete_error:
+            raise self.complete_error
+        item = self.scripted.pop(0) if self.scripted else self.text
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, CompletionResult):
+            return item
+        return CompletionResult(text=item, model_used=self.model_used)
+
+
 class ReviewToolsetTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -188,7 +209,13 @@ class ReviewToolsetTest(unittest.TestCase):
 
     def test_review_toolset_rejects_other_tools(self):
         server = self._server()
-        for name in ("ask_code_partner", "ask_partner", "list_partner_models"):
+        for name in (
+            "ask_code_partner",
+            "ask_code_partner_v2",
+            "ask_partner",
+            "ask_partner_v2",
+            "list_partner_models",
+        ):
             with self.subTest(name=name), self.assertRaises(PartnerError) as ctx:
                 server.call_tool(name, {})
             self.assertEqual(ctx.exception.code, "invalid_request")
@@ -489,6 +516,108 @@ class ReviewToolsetTest(unittest.TestCase):
             artifact["warnings"],
         )
 
+    # -- bounded repair retry -------------------------------------------------
+
+    def _log_records(self):
+        return [
+            json.loads(line)
+            for line in self.stderr.getvalue().splitlines()
+            if '"review_code"' in line
+        ]
+
+    def test_malformed_then_valid_output_is_repaired_once(self):
+        backend = ScriptedBackend(
+            ["here is my review, no json", model_payload()],
+            model_used="claude-sonnet-5.5",
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        self.assertFalse(validate(artifact))
+        self.assertTrue(
+            any("repaired after one retry" in w for w in artifact["warnings"]),
+            artifact["warnings"],
+        )
+        # Discovery runs once; the retry completes on the same resolved model.
+        self.assertEqual(backend.list_calls, 1)
+        models = [call["model"] for call in backend.complete_calls]
+        self.assertEqual(models, ["claude-sonnet-5.5", "claude-sonnet-5.5"])
+        # The retry prompt reuses the original prompt, then appends a fresh
+        # nonce-delimited section echoing the output plus stable issue codes.
+        first_prompt = backend.complete_calls[0]["messages"][0]["content"]
+        retry_prompt = backend.complete_calls[1]["messages"][0]["content"]
+        self.assertTrue(retry_prompt.startswith(first_prompt))
+        self.assertIn("here is my review, no json", retry_prompt)
+        self.assertIn("invalid_json", retry_prompt)
+        match = re.search(r"<<<PREVIOUS_OUTPUT_([0-9a-f]{16})>>>", retry_prompt)
+        self.assertIsNotNone(match, retry_prompt)
+        self.assertEqual(retry_prompt.count(f"<<<END_PREVIOUS_OUTPUT_{match.group(1)}>>>"), 1)
+        records = self._log_records()
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["repair_attempted"])
+        self.assertTrue(records[0]["repaired"])
+
+    def test_repaired_ok_artifact_is_cached(self):
+        backend = ScriptedBackend(["not json", model_payload()], model_used="claude-sonnet-5.5")
+        server = self._server(backend)
+        first = self._artifact(server, valid_args())
+        second = self._artifact(server, valid_args())
+        self.assertEqual(first["status"], "ok")
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(len(backend.complete_calls), 2)
+        self.assertEqual(backend.list_calls, 1)
+
+    def test_malformed_twice_is_invalid_output(self):
+        backend = ScriptedBackend(
+            ["still not json", "not json either"], model_used="claude-sonnet-5.5"
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        self._assert_error(artifact, "error", "invalid_output")
+        self.assertEqual(len(backend.complete_calls), 2)
+        self.assertEqual(backend.list_calls, 1)
+        records = self._log_records()
+        self.assertTrue(records[0]["repair_attempted"])
+        self.assertFalse(records[0]["repaired"])
+
+    def test_secret_like_model_output_skips_repair_retry(self):
+        secret_text = "token = 'ghp_" + "a" * 30 + "'"
+        backend = FakeBackend(text=secret_text, model_used="claude-sonnet-5.5")
+        artifact = self._artifact(self._server(backend), valid_args())
+        self._assert_error(artifact, "error", "invalid_output")
+        # Secret-like output is never echoed outbound: the retry is skipped.
+        self.assertEqual(len(backend.complete_calls), 1)
+        self.assertNotIn(secret_text, artifact["errors"][0]["message"])
+        records = self._log_records()
+        self.assertFalse(records[0]["repair_attempted"])
+        self.assertFalse(records[0]["repaired"])
+
+    def test_repair_retry_provider_failure_is_invalid_output(self):
+        backend = ScriptedBackend(
+            ["not json", PartnerError("quota_exceeded", "rate limit")],
+            model_used="claude-sonnet-5.5",
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        self._assert_error(artifact, "error", "invalid_output")
+        self.assertEqual(len(backend.complete_calls), 2)
+        records = self._log_records()
+        self.assertTrue(records[0]["repair_attempted"])
+        self.assertFalse(records[0]["repaired"])
+
+    def test_repair_retry_revalidates_model_used(self):
+        backend = ScriptedBackend(
+            [
+                "not json",
+                CompletionResult(text=model_payload(), model_used="gpt-5.3-codex"),
+            ],
+            model_used="claude-sonnet-5.5",
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        # The retry response is provenance-checked like the first call:
+        # a strict mismatch fails closed instead of producing an artifact.
+        self._assert_error(artifact, "rejected", "model_mismatch")
+        self.assertEqual(artifact["provenance"]["model_used"], "gpt-5.3-codex")
+        self.assertEqual(len(backend.complete_calls), 2)
+
     # -- happy path and cache ----------------------------------------------------
 
     def test_valid_artifact_ok(self):
@@ -522,7 +651,7 @@ class ReviewToolsetTest(unittest.TestCase):
         self.assertEqual(prov["model_used"], "claude-sonnet-5.5")
         self.assertTrue(prov["model_match"])
         self.assertTrue(prov["discovery_confirmed"])
-        self.assertEqual(prov["prompt_version"], "2026-11-02")
+        self.assertEqual(prov["prompt_version"], "2026-11-04")
 
     def test_ok_artifact_cached_and_second_call_hits(self):
         backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
@@ -543,7 +672,9 @@ class ReviewToolsetTest(unittest.TestCase):
         second = self._artifact(server, valid_args())
         self._assert_error(first, "error", "invalid_output")
         self._assert_error(second, "error", "invalid_output")
-        self.assertEqual(len(backend.complete_calls), 2)
+        # Each call makes one provider attempt plus one bounded repair
+        # retry, and neither artifact is cached.
+        self.assertEqual(len(backend.complete_calls), 4)
 
     def test_review_id_correlation_and_generation(self):
         backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")

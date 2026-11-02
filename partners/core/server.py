@@ -177,6 +177,29 @@ class PartnerMCPServer:
             "model": self._string_arg("Optional model override"),
             "role": self._string_arg("Optional named model role from config.models"),
         }
+        ask_schema = {
+            "type": "object",
+            "properties": {
+                "question": self._string_arg("Question, hypothesis or review request"),
+                "context": self._string_arg(
+                    "Relevant architecture, constraints, snippets and prior findings"
+                ),
+                "files": {
+                    "type": "array",
+                    "description": "Optional file excerpts: [{name, content}]",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
+                        "required": ["name", "content"],
+                    },
+                },
+                **common_properties,
+            },
+            "required": ["question"],
+        }
         return [
             {
                 "name": "partner_info",
@@ -202,29 +225,16 @@ class PartnerMCPServer:
                     "Ask this partner a single stateless question. Pass enough context; "
                     "there is no memory between calls."
                 ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "question": self._string_arg("Question, hypothesis or review request"),
-                        "context": self._string_arg(
-                            "Relevant architecture, constraints, snippets and prior findings"
-                        ),
-                        "files": {
-                            "type": "array",
-                            "description": "Optional file excerpts: [{name, content}]",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": {"type": "string"},
-                                    "content": {"type": "string"},
-                                },
-                                "required": ["name", "content"],
-                            },
-                        },
-                        **common_properties,
-                    },
-                    "required": ["question"],
-                },
+                "inputSchema": ask_schema,
+            },
+            {
+                "name": f"{ask}_v2",
+                "description": (
+                    "Ask this partner a single stateless question like the base ask "
+                    "tool, but return a JSON object with the answer text plus model "
+                    "provenance (model_requested, model_used, model_match)."
+                ),
+                "inputSchema": ask_schema,
             },
             {
                 "name": dialog,
@@ -318,22 +328,50 @@ class PartnerMCPServer:
                 result.append(model)
         return result
 
-    def _complete(self, messages: list[dict[str, str]], args: dict[str, Any]) -> str:
+    def _complete_ex(
+        self, messages: list[dict[str, str]], args: dict[str, Any]
+    ) -> tuple[str, str, str | None, Skill]:
+        """One completion pass returning text plus model provenance.
+
+        ``model_requested`` is the candidate that produced the answer;
+        ``model_used`` is provider-reported via ``complete_ex`` when the
+        backend exposes it and stays ``None`` for plain ``complete``
+        backends. Candidate order and the error break conditions match
+        the legacy ask loop exactly.
+        """
         cfg = self._cfg()
         backend = self._backend_instance()
         skill = load_skill(cfg, str(args.get("skill") or ""))
         system_prompt = compose_system_prompt(cfg, skill)
         generation = dict(cfg.generation)
         generation.update(skill.generation)
+        complete_ex = getattr(backend, "complete_ex", None)
         last_error: PartnerError | None = None
         for model in self._candidate_models(cfg, skill, args):
             try:
-                return backend.complete(
+                if not callable(complete_ex):
+                    return (
+                        backend.complete(
+                            messages,
+                            system_prompt=system_prompt,
+                            model=model,
+                            generation=generation,
+                        ),
+                        model,
+                        None,
+                        skill,
+                    )
+                result = complete_ex(
                     messages,
                     system_prompt=system_prompt,
                     model=model,
                     generation=generation,
                 )
+                text = getattr(result, "text", "")
+                if not isinstance(text, str):
+                    text = str(text)
+                model_used = getattr(result, "model_used", None)
+                return text, model, model_used if isinstance(model_used, str) else None, skill
             except PartnerError as e:
                 last_error = e
                 if e.code in ("unauthorized", "invalid_config", "invalid_request"):
@@ -342,7 +380,11 @@ class PartnerMCPServer:
             raise last_error
         raise PartnerError("backend_error", "no model candidates configured")
 
-    def _ask(self, args: dict[str, Any]) -> str:
+    def _complete(self, messages: list[dict[str, str]], args: dict[str, Any]) -> str:
+        return self._complete_ex(messages, args)[0]
+
+    def _ask_messages(self, args: dict[str, Any]) -> list[dict[str, str]]:
+        """Validated ``ask_*`` input rendered as one user message."""
         question = str(args.get("question") or "").strip()
         if not question:
             raise PartnerError("invalid_request", "question is required")
@@ -350,7 +392,25 @@ class PartnerMCPServer:
         if not isinstance(files, list):
             raise PartnerError("invalid_request", "files must be an array")
         content = self._question_content(question, str(args.get("context") or ""), files)
-        return self._complete([{"role": "user", "content": content}], args)
+        return [{"role": "user", "content": content}]
+
+    def _ask(self, args: dict[str, Any]) -> str:
+        return self._complete(self._ask_messages(args), args)
+
+    def _ask_v2(self, args: dict[str, Any]) -> str:
+        """Structured ask answer: text plus honest model provenance."""
+        cfg = self._cfg()
+        text, model_requested, model_used, skill = self._complete_ex(self._ask_messages(args), args)
+        model_used = model_used or None
+        payload = {
+            "partner_id": cfg.partner_id,
+            "skill": skill.name or None,
+            "model_requested": model_requested,
+            "model_used": model_used,
+            "model_match": None if model_used is None else model_used == model_requested,
+            "text": text,
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     def _dialog(self, args: dict[str, Any]) -> str:
         raw = args.get("messages")
@@ -435,6 +495,8 @@ class PartnerMCPServer:
         ask, dialog = self._tool_names()
         if name == ask or name == "ask_partner":
             return self._ask(arguments)
+        if name == f"{ask}_v2" or name == "ask_partner_v2":
+            return self._ask_v2(arguments)
         if name == dialog or name == "ask_partner_dialog":
             return self._dialog(arguments)
         raise PartnerError("invalid_request", f"unknown tool: {name}")

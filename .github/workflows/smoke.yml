@@ -29,7 +29,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Smoke tools/list over stdio
-        run: python3 tools/mcp_smoke.py --list
+        run: >
+          python3 tools/mcp_smoke.py --list
+          --expect-tool ask_code_partner
+          --expect-tool ask_code_partner_v2
       - name: Smoke partner_info call
         run: python3 tools/mcp_smoke.py --call partner_info
       - name: Smoke list_partner_skills call
@@ -53,7 +56,9 @@ jobs:
           --expect-tool review_code
           --expect-tool list_reviewer_models
           --forbid-tool ask_code_partner
+          --forbid-tool ask_code_partner_v2
           --forbid-tool ask_product_partner
+          --forbid-tool ask_product_partner_v2
           --forbid-tool list_partner_models
       - name: Smoke list_reviewer_models call
         run: python3 tools/mcp_smoke.py --call list_reviewer_models
@@ -126,6 +131,7 @@ jobs:
         run: >
           python3 tools/mcp_smoke.py --list
           --expect-tool ask_code_partner
+          --expect-tool ask_code_partner_v2
           --expect-tool list_partner_models
           --forbid-tool review_code
           --forbid-tool ask_product_partner
@@ -137,4 +143,8 @@ jobs:
         # in CI without secrets or external network access.
         run: >
           python3 tools/mcp_smoke.py --call ask_code_partner
+          --arguments-json '{"question":"ping"}'
+      - name: Smoke ask_code_partner_v2 end to end
+        run: >
+          python3 tools/mcp_smoke.py --call ask_code_partner_v2
           --arguments-json '{"question":"ping"}'
