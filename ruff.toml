@@ -8,4 +8,4 @@ line-length = 100
 select = ["E", "F", "W", "I", "UP", "B", "C4", "RUF"]
 
 [lint.isort]
-known-first-party = ["partners", "core", "backends", "harness"]
+known-first-party = ["partners", "core", "backends", "harness", "review"]
