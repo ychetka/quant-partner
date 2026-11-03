@@ -127,6 +127,10 @@ class PartnerMCPServer:
                             "Allowlisted model alias from list_reviewer_models "
                             "(free-form provider IDs are rejected)"
                         ),
+                        "skill": self._string_arg(
+                            "Optional installed review skill name from "
+                            "list_partner_skills (default: configured default_skill)"
+                        ),
                         "strict_model": {
                             "type": "boolean",
                             "description": (

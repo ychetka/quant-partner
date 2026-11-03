@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -84,6 +85,18 @@ def valid_args(**overrides):
     }
     args.update(overrides)
     return args
+
+
+def skill_manifest(version=1):
+    """Minimal valid skill manifest body for temporary skills roots."""
+    return json.dumps(
+        {
+            "name": "test-skill",
+            "description": "d",
+            "when_to_use": "w",
+            "version": version,
+        }
+    )
 
 
 class FakeBackend:
@@ -182,9 +195,9 @@ class ReviewToolsetTest(unittest.TestCase):
         path.write_text(json.dumps({"partners": {"code-reviewer": partner}}), encoding="utf-8")
         return path
 
-    def _server(self, backend=None, **review_overrides):
-        if review_overrides:
-            self.config_path = self._write_config(review_overrides)
+    def _server(self, backend=None, partner_overrides=None, **review_overrides):
+        if review_overrides or partner_overrides:
+            self.config_path = self._write_config(review_overrides or None, partner_overrides)
             self.env.stop()
             self.env = patch.dict(os.environ, {"PARTNER_CONFIG": str(self.config_path)})
             self.env.start()
@@ -192,6 +205,25 @@ class ReviewToolsetTest(unittest.TestCase):
         if backend is not None:
             server._backend = backend
         return server
+
+    def _skills_root(self, packs):
+        """Create a temporary skills root inside partners/ and return its Path.
+
+        ``packs`` maps a skill directory name to ``(manifest, prompt)``; a
+        ``None`` manifest or prompt skips that file. The config loader
+        only accepts ``skills_root`` values relative to partners/, so the
+        temporary directory must live inside the package tree.
+        """
+        root = Path(tempfile.mkdtemp(prefix=".test-skills-", dir=ROOT / "partners"))
+        self.addCleanup(shutil.rmtree, root, True)
+        for name, (manifest, prompt) in packs.items():
+            directory = root / name
+            directory.mkdir()
+            if manifest is not None:
+                (directory / "manifest.json").write_text(manifest, encoding="utf-8")
+            if prompt is not None:
+                (directory / "prompt.txt").write_text(prompt, encoding="utf-8")
+        return root
 
     def _artifact(self, server, args):
         text = server.call_tool("review_code", args)
@@ -850,6 +882,142 @@ class ReviewToolsetTest(unittest.TestCase):
         with patch.object(server, "_review_service", return_value=BrokenService()):
             artifact = json.loads(server._review_code(valid_args()))
         self._assert_error(artifact, "error", "internal_error")
+
+    # -- skill selection -------------------------------------------------------------
+
+    def test_review_tool_schema_documents_skill(self):
+        server = self._server()
+        tool = next(t for t in server.tools() if t["name"] == "review_code")
+        props = tool["inputSchema"]["properties"]
+        self.assertIn("skill", props)
+        self.assertNotIn("skill", tool["inputSchema"]["required"])
+
+    def test_list_partner_skills_surfaces_security_reviewer(self):
+        server = self._server()
+        text = server.call_tool("list_partner_skills", {})
+        self.assertIn("code-reviewer", text)
+        self.assertIn("security-reviewer", text)
+
+    def test_review_code_skill_arg_selects_named_skill(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        artifact = self._artifact(self._server(backend), valid_args(skill="security-reviewer"))
+        self.assertEqual(artifact["status"], "ok", artifact)
+        prompt = backend.complete_calls[0]["system_prompt"]
+        self.assertIn("Security Reviewer", prompt)
+        records = self._log_records()
+        self.assertEqual(records[0]["skill"], "security-reviewer")
+
+    def test_review_code_default_skill_is_used_without_arg(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        prompt = backend.complete_calls[0]["system_prompt"]
+        self.assertIn("Code Reviewer", prompt)
+        self.assertNotIn("Security Reviewer", prompt)
+        records = self._log_records()
+        self.assertEqual(records[0]["skill"], "code-reviewer")
+
+    def test_unknown_skill_fails_closed_before_provider_access(self):
+        backend = FakeBackend()
+        server = self._server(backend)
+        artifact = self._artifact(server, valid_args(skill="no-such-skill"))
+        self._assert_error(artifact, "error", "invalid_request")
+        self.assertEqual(backend.list_calls, 0)
+        self.assertEqual(backend.complete_calls, [])
+        # The failure still carries the deterministic early-bound key.
+        again = self._artifact(server, valid_args(skill="no-such-skill"))
+        self.assertEqual(again["errors"][0]["code"], "invalid_request")
+        self.assertRegex(artifact["idempotency_key"], r"^[0-9a-f]{64}$")
+        self.assertEqual(artifact["idempotency_key"], again["idempotency_key"])
+
+    def test_non_string_skill_rejected(self):
+        backend = FakeBackend()
+        artifact = self._artifact(self._server(backend), valid_args(skill=7))
+        self._assert_error(artifact, "error", "invalid_request")
+        self.assertEqual(backend.list_calls, 0)
+
+    def test_skill_joins_idempotency_key_material(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        server = self._server(backend)
+        first = self._artifact(server, valid_args())
+        second = self._artifact(server, valid_args(skill="security-reviewer"))
+        third = self._artifact(server, valid_args())
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(second["status"], "ok")
+        # Same diff and model under another skill gets a different key and
+        # no cross-skill cache hit; the default-skill repeat still hits.
+        self.assertNotEqual(first["idempotency_key"], second["idempotency_key"])
+        self.assertFalse(second["cached"])
+        self.assertTrue(third["cached"])
+        self.assertEqual(third["idempotency_key"], first["idempotency_key"])
+        self.assertEqual(len(backend.complete_calls), 2)
+
+    def test_blank_skill_arg_fails_closed(self):
+        backend = FakeBackend()
+        server = self._server(backend)
+        # A present-but-blank skill names nothing: it fails closed as
+        # invalid_request instead of silently using the default skill.
+        for value in ("", " ", "\t \n"):
+            with self.subTest(skill=value):
+                artifact = self._artifact(server, valid_args(skill=value))
+                self._assert_error(artifact, "error", "invalid_request")
+        self.assertEqual(backend.list_calls, 0)
+        self.assertEqual(backend.complete_calls, [])
+
+    def test_broken_installed_skill_is_invalid_config(self):
+        # A present-but-broken pack - unparseable manifest or missing
+        # prompt - surfaces invalid_config, not the not-installed
+        # invalid_request code reserved for unknown names.
+        cases = {
+            "corrupt-manifest": ("{not valid json", "prompt text"),
+            "missing-prompt": (skill_manifest(), None),
+        }
+        for label, (manifest, prompt) in cases.items():
+            with self.subTest(pack=label):
+                root = self._skills_root(
+                    {
+                        "code-reviewer": (skill_manifest(), "Code Reviewer"),
+                        "target-skill": (manifest, prompt),
+                    }
+                )
+                backend = FakeBackend()
+                server = self._server(backend, partner_overrides={"skills_root": root.name})
+                artifact = self._artifact(server, valid_args(skill="target-skill"))
+                self._assert_error(artifact, "error", "invalid_config")
+                self.assertEqual(backend.list_calls, 0)
+                self.assertEqual(backend.complete_calls, [])
+
+    def test_skill_version_joins_idempotency_key(self):
+        root = self._skills_root({"code-reviewer": (skill_manifest(version=1), "Code Reviewer")})
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        server = self._server(backend, partner_overrides={"skills_root": root.name})
+        first = self._artifact(server, valid_args())
+        self.assertEqual(first["status"], "ok")
+        self.assertFalse(first["cached"])
+        # Bumping the manifest version changes the key material, so the
+        # same inputs resolve a fresh review rather than a cache hit.
+        (root / "code-reviewer" / "manifest.json").write_text(
+            skill_manifest(version=2), encoding="utf-8"
+        )
+        second = self._artifact(server, valid_args())
+        self.assertEqual(second["status"], "ok")
+        self.assertFalse(second["cached"])
+        self.assertNotEqual(first["idempotency_key"], second["idempotency_key"])
+        self.assertEqual(len(backend.complete_calls), 2)
+
+    def test_early_rejection_log_keeps_skill_label(self):
+        backend = FakeBackend()
+        server = self._server(backend)
+        # A pre-resolution rejection still records the raw skill label.
+        artifact = self._artifact(server, valid_args(skill="security-reviewer", diff="x" * 2001))
+        self._assert_error(artifact, "rejected", "input_too_large")
+        records = self._log_records()
+        self.assertEqual(records[-1]["skill"], "security-reviewer")
+        # The rejected unknown-skill path keeps the requested name too.
+        artifact = self._artifact(server, valid_args(skill="no-such-skill"))
+        self._assert_error(artifact, "error", "invalid_request")
+        records = self._log_records()
+        self.assertEqual(records[-1]["skill"], "no-such-skill")
 
     # -- logging -------------------------------------------------------------------
 

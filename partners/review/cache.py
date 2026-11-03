@@ -45,12 +45,17 @@ def idempotency_key(
     diff: str,
     context: str = "",
     file_contents: Iterable[str] = (),
+    skill: str = "",
+    skill_version: str = "",
     schema_version: str = schema.SCHEMA_VERSION,
 ) -> str:
     """Canonical sha256 idempotency key from spec section 8.
 
     ``review_id`` and timestamps are deliberately absent: they are
-    correlation metadata, not review inputs.
+    correlation metadata, not review inputs. The resolved ``skill``
+    name and its manifest ``skill_version`` participate so identical
+    inputs reviewed under different skill packs - or different versions
+    of one pack - never share a cache entry.
     """
     # A length-prefixed canonical JSON object removes the concatenation
     # ambiguity between ``context`` and ``file_contents`` boundaries.
@@ -71,6 +76,7 @@ def idempotency_key(
         model_alias,
         model_requested,
         "true" if strict_model else "false",
+        f"{skill}@{skill_version}",
         str(head_sha).lower(),
         str(base_sha).lower(),
         _sha256_hex(diff),

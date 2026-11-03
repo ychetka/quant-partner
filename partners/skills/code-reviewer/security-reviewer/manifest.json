@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "security-reviewer",
+  "description": "Advisory defensive security review of a supplied unified diff with strict JSON artifact output.",
+  "when_to_use": "Used by the review_code tool via its optional skill argument for an independent, non-binding security review of a pull-request diff.",
+  "generation": {
+    "temperature": 0.1
+  },
+  "version": 1
+}
