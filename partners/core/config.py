@@ -32,6 +32,7 @@ class Skill:
     prompt: str
     manifest_path: Path
     model: str = ""
+    version: str = ""
     fallback_models: list[str] = field(default_factory=list)
     generation: dict[str, Any] = field(default_factory=dict)
 
@@ -359,6 +360,7 @@ def load_skill(cfg: PartnerConfig, name: str | None = None) -> Skill:
         prompt=prompt,
         manifest_path=manifest_path,
         model=str(manifest.get("model", "")),
+        version=str(manifest.get("version") or ""),
         fallback_models=_string_list(manifest.get("fallback_models"), "skill fallback_models"),
         generation=_expect_mapping(manifest.get("generation", {}), "skill generation"),
     )

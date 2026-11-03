@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.config import compose_system_prompt, load_skill
+from core.config import compose_system_prompt, list_skills, load_skill
 from core.errors import PartnerError, sanitize
 
 from . import artifact, schema
@@ -224,6 +224,7 @@ class _Call:
     model_alias: str = ""
     model_requested: str = ""
     skill: str = ""
+    skill_version: str = ""
     strict_model: bool = True
     discovery_confirmed: bool = False
     model_used: str = ""
@@ -310,6 +311,10 @@ class ReviewService:
         return message[: schema.MAX_ERROR_MESSAGE_CHARS]
 
     def _provenance(self, call: _Call, *, model_used: str = "") -> dict[str, Any]:
+        # ``call.skill`` is deliberately absent here: the strict v1.0
+        # artifact schema has no field for it, so the resolved skill is
+        # observable only through the idempotency key material and the
+        # structured stderr log record.
         return build_provenance(
             partner_id=self.cfg.partner_id,
             backend=self.cfg.backend,
@@ -372,6 +377,7 @@ class ReviewService:
             model_requested=call.model_requested,
             strict_model=call.strict_model,
             skill=call.skill,
+            skill_version=call.skill_version,
             head_sha=call.head_sha,
             base_sha=call.base_sha,
             diff=diff,
@@ -609,6 +615,15 @@ class ReviewService:
         return text
 
     def _run(self, args: dict[str, Any], call: _Call) -> dict[str, Any]:
+        # Bounded skill label for the structured log on pre-resolution
+        # rejections: the raw caller-named skill when supplied, else the
+        # configured default it would resolve to. It is overwritten by
+        # the loaded skill's canonical name after resolution below.
+        raw_skill = args.get("skill")
+        if raw_skill is None:
+            call.skill = _safe_name(self.cfg.default_skill, "")
+        elif isinstance(raw_skill, str):
+            call.skill = _safe_name(raw_skill.strip(), "")
         opts = self._options()
         call.review_id = self._review_id(args.get("review_id"))
         raw_head, raw_base = args.get("head_sha"), args.get("base_sha")
@@ -685,26 +700,46 @@ class ReviewService:
 
         # Resolve an optional caller-named review skill before the cache
         # lookup so an unknown name fails closed without provider access.
-        # A blank value falls back to the configured default skill.
+        # An absent argument falls back to the configured default skill;
+        # a present-but-blank argument is rejected instead of silently
+        # defaulting.
         skill_arg = args.get("skill")
         if skill_arg is not None and not isinstance(skill_arg, str):
             return fail("error", "invalid_request", "skill must be a string")
-        if isinstance(skill_arg, str) and skill_arg.strip():
+        if isinstance(skill_arg, str):
+            requested_skill = skill_arg.strip()
+            if not requested_skill:
+                return fail("error", "invalid_request", "skill must be a non-empty string")
+            # load_skill maps every failure - unknown name and broken
+            # pack alike - to invalid_config, so installation is checked
+            # first: only a truly absent name maps to the fail-closed
+            # invalid_request artifact, while a present-but-broken pack
+            # (manifest parse, missing prompt, invalid fields) keeps the
+            # loader's safe invalid_config code.
             try:
-                skill = load_skill(self.cfg, skill_arg)
-            except PartnerError:
+                installed = {entry.name for entry in list_skills(self.cfg)}
+            except PartnerError as e:
+                return fail("error", e.code, e.message)
+            if requested_skill not in installed:
                 return fail(
                     "error",
                     "invalid_request",
-                    f"requested review skill is not installed: {skill_arg.strip()[:128]}",
+                    f"requested review skill is not installed: {requested_skill[:128]}",
                 )
+            try:
+                skill = load_skill(self.cfg, requested_skill)
+            except PartnerError as e:
+                return fail("error", e.code, e.message)
         else:
-            skill = None
-        call.skill = skill.name if skill is not None else self.cfg.default_skill
+            # The default pack is loaded before the cache lookup as
+            # well: its manifest version participates in the key below.
+            skill = load_skill(self.cfg)
+        call.skill = skill.name
+        call.skill_version = skill.version
         # Rebind: the canonical cache key also covers the pinned backend
-        # model and the resolved skill name, which are known only after
-        # resolution, so identical inputs under different skills never
-        # share a cache entry.
+        # model and the resolved skill name@version, which are known only
+        # after resolution, so identical inputs under different skills or
+        # skill versions never share a cache entry.
         self._bind_key(call, **key_material)
 
         cache = self._cache(opts)
@@ -724,10 +759,8 @@ class ReviewService:
                 pass
 
         # Load prompt material before any provider access so a broken
-        # skill or harness fails locally, not after a discovery call. A
-        # caller-named skill was already loaded during resolution above.
-        if skill is None:
-            skill = load_skill(self.cfg)
+        # harness fails locally, not after a discovery call. The skill
+        # pack itself was already loaded during resolution above.
         system_prompt = compose_system_prompt(self.cfg, skill)
         generation = dict(self.cfg.generation)
         generation.update(skill.generation)
