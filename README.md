@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 One Python entrypoint runs multiple partner instances. Each instance has its own backend, base harness and pluggable skills:
 
 - `gh-copilot-partner` - code, architecture, stack, review and debugging consultations through direct GitHub Copilot API access.
-- `gemini-product` - product management, UX architecture, prioritization and advisory spec compliance verification through the Gemini API.
+- `gemini-product` - product management, UX architecture, prioritization, release-note drafting and advisory spec compliance verification through the Gemini API.
 - `code-reviewer` - advisory second-opinion review of unified diffs with strict model provenance.
 - `openai-compatible` - optional generic backend for any OpenAI-compatible endpoint.
 
@@ -191,6 +191,8 @@ Prompt composition order: base harness, skill prompt, then the caller's question
 Set `skills_root` in a partner config to share a skill directory across partner IDs. The example `local-openai-partner` reuses `skills/gh-copilot-partner`.
 
 The `code-reviewer` partner ships two packs: `code-reviewer` (default general review) and `security-reviewer` (advisory defensive security review: injection, authn/authz gaps, secret handling, unsafe deserialization, path traversal, SSRF, crypto misuse, weak randomness and supply-chain red flags). Select one per call through the `skill` argument of `review_code`.
+
+The `gemini-product` partner ships five packs: `product-manager` (default product framing), `prioritization`, `ux-architect`, `spec-compliance-verifier` (advisory spec/diff drift check returning a strict artifact) and `release-manager` (advisory release-note and changelog drafting with semver signal classification). Select one per call through the `skill` argument of the `ask_product_partner*` tools.
 
 ## Error contract
 
