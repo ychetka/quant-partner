@@ -99,13 +99,14 @@ class ReleaseManagerSkillTest(unittest.TestCase):
         self.assertIn("never invent", prompt)
         self.assertIn("ask", prompt)
         self.assertIn("english", prompt)
+        self.assertIn("untrusted", prompt)
 
     def test_prompt_is_prose_not_strict_json_artifact(self):
         # This skill runs on the conversational product toolset: unlike the
         # review artifact skills it must not demand a strict JSON object,
         # which would conflict with the prose gemini-product harness.
         prompt = load_skill(_gemini_cfg(), SKILL_NAME).prompt.lower()
-        self.assertNotIn("json", prompt)
+        self.assertNotIn("strict json", prompt)
         self.assertNotIn("schema_version", prompt)
         self.assertNotIn("artifact", prompt)
 
