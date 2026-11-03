@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "release-manager",
+  "description": "Release-note drafting, changelog hygiene and semver signal detection from change summaries.",
+  "when_to_use": "Use to draft release notes or changelog entries from supplied change summaries and PR lists, classify the semver bump signal and flag missing changelog coverage; advisory drafts only.",
+  "generation": {
+    "temperature": 0.3
+  },
+  "version": 1
+}
