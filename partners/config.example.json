@@ -221,6 +221,33 @@
         "max_tokens": 8192
       },
       "timeout_seconds": 240
+    },
+    "org-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/org-partner.txt",
+      "default_skill": "org-design",
+      "skills_root": "skills/org-partner",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.4,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
     }
   }
 }

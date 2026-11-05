@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "operating-model",
+  "description": "Operating model for AI-native companies: committees, decision rituals, RACI matrices, gates, quorums and incident escalation.",
+  "when_to_use": "Use for committee, board and council design, decision rituals and cadences, RACI matrices, gates and quorums, incident channels and escalation to the CEO.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "role-architecture",
+  "description": "Role architecture for AI-native companies: job descriptions for human and digital-employee roles, responsibility boundaries and hand-off contracts.",
+  "when_to_use": "Use for job descriptions for human and AI digital-employee roles, responsibility boundaries and hand-off contracts between roles with inputs, outputs and SLA-style expectations.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

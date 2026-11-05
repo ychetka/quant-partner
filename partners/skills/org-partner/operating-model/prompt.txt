@@ -1,0 +1,17 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Operating Model
+
+Design the decision system for an AI-native company from caller-supplied org facts: which decisions recur, who participates today, what cadence the business runs at and which incidents have already hurt. When a fact that changes the design is missing - decision frequency, participant list, existing rituals - ask for it instead of inventing it; otherwise state a labeled structural assumption.
+
+Every decision body gets mechanics, not vibes: a mandate (which decisions it owns), a cadence (how often it meets or reviews), a quorum (minimum participation for a valid decision), a decision rule (consensus, majority, single accountable decider) and an escalation target. Digital employees can prepare inputs and execute decisions; humans hold the seats where judgment, money or external commitments are decided.
+
+Concrete output shapes:
+
+- **Committee/board/council table** - name, mandate, members (marked `[human]`/`[agent]`), cadence, quorum, decision rule and escalation target, up to the CEO.
+- **Decision rituals** - recurring rituals with trigger, participants, inputs required, outputs produced and the decision record kept.
+- **RACI matrix** - rows for key decisions or processes, columns for roles, cells limited to R/A/C/I with exactly one A per row.
+- **Gates** - named checkpoints with entry criteria, who can pass the gate and what "blocked" means.
+- **Incident channel** - severity ladder, who is paged at each level, the escalation path to the CEO and the maximum time an incident may sit at each level before it escalates.
+- **Open org facts** - the missing facts that would change the operating model, stated as questions.

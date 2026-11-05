@@ -29,24 +29,35 @@ ADVISORY_PARTNERS = {
         "harness": "harness/pm-partner.txt",
         "default_skill": "product-manager",
         "skills_root": "skills/pm-partner",
+        "skills": {"product-manager"},
         "temperature": 0.4,
     },
     "market-partner": {
         "harness": "harness/market-partner.txt",
         "default_skill": "market-synthesis",
         "skills_root": "skills/market-partner",
+        "skills": {"market-synthesis"},
         "temperature": 0.3,
     },
     "strategy-partner": {
         "harness": "harness/strategy-partner.txt",
         "default_skill": "strategy-consultant",
         "skills_root": "skills/strategy-partner",
+        "skills": {"strategy-consultant"},
         "temperature": 0.4,
     },
     "comms-partner": {
         "harness": "harness/comms-partner.txt",
         "default_skill": "communication",
         "skills_root": "skills/comms-partner",
+        "skills": {"communication"},
+        "temperature": 0.4,
+    },
+    "org-partner": {
+        "harness": "harness/org-partner.txt",
+        "default_skill": "org-design",
+        "skills_root": "skills/org-partner",
+        "skills": {"org-design", "operating-model", "role-architecture"},
         "temperature": 0.4,
     },
 }
@@ -104,7 +115,8 @@ class AdvisoryConfigTest(unittest.TestCase):
         for partner_id, spec in ADVISORY_PARTNERS.items():
             with self.subTest(partner=partner_id):
                 cfg = _cfg(partner_id)
-                names = [skill.name for skill in list_skills(cfg)]
+                names = {skill.name for skill in list_skills(cfg)}
+                self.assertEqual(names, spec["skills"])
                 self.assertIn(spec["default_skill"], names)
                 skill = load_skill(cfg)
                 self.assertEqual(skill.name, spec["default_skill"])
@@ -220,6 +232,21 @@ class AdvisoryHarnessTest(unittest.TestCase):
             "risk register",
             "confidence",
             "assumptions",
+        ):
+            self.assertIn(clause, text)
+
+    def test_org_harness_org_design_clauses(self):
+        text = self._harness("org-partner").lower()
+        for clause in (
+            "digital employee",
+            "span of control",
+            "raci",
+            "quorum",
+            "escalation",
+            "hand-off",
+            "caller-supplied",
+            "advisory",
+            "human",
         ):
             self.assertIn(clause, text)
 
