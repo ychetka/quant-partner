@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "partners"))
 
 from core.config import (  # noqa: E402
+    _safe_relative_path,
     compose_system_prompt,
     list_skills,
     load_partner_config,
@@ -264,6 +265,11 @@ class PartnersDocTest(unittest.TestCase):
         Returns None when the resolved skills root does not exist at all.
         """
         skills_root = raw.get("skills_root") or f"skills/{partner_id}"
+        # Same guard core.config applies on load: skills_root must stay a
+        # relative path inside partners/, so absolute paths or ".."
+        # escapes raise here and fail the test loudly instead of silently
+        # scanning a directory outside the package.
+        skills_root = _safe_relative_path(skills_root, "skills_root")
         root = ROOT / "partners" / skills_root
         if not root.is_dir():
             return None
@@ -274,18 +280,23 @@ class PartnersDocTest(unittest.TestCase):
         ]
 
     def _assert_not_advertised(self, section, tool_name):
-        """Every mention of tool_name must be a negation, never an offer."""
-        start = 0
-        while True:
-            idx = section.find(tool_name, start)
-            if idx == -1:
-                return
-            window = section[max(0, idx - 40) : idx].lower()
+        """Every mention of tool_name must be a negation, never an offer.
+
+        Line-scoped heuristic: a mention counts as negated only when the
+        line it appears on carries a negation marker (`no `, `not `,
+        `lacks`, `does not`, `never`, `without`). Deliberately simple and
+        deterministic - docs should spell the negation out on the same
+        line as the tool name.
+        """
+        markers = ("no ", "not ", "lacks", "does not", "never", "without")
+        for line in section.splitlines():
+            if tool_name not in line:
+                continue
+            lower = line.lower()
             self.assertTrue(
-                "no " in window or "not " in window,
+                any(marker in lower for marker in markers),
                 f"{tool_name} appears advertised, not negated, in section:\n{section}",
             )
-            start = idx + len(tool_name)
 
     def test_every_configured_partner_id_is_documented(self):
         text = self._doc_text()
@@ -338,6 +349,13 @@ class PartnersDocTest(unittest.TestCase):
                 for name in sorted(names):
                     with self.subTest(partner=partner_id, tool=name):
                         self.assertIn(name, documented)
+                # Cross-toolset leakage: question-tool names from the
+                # other toolset branches must not appear as offers
+                # either. Same per-line negation heuristic, so an
+                # explicit "no ask_code_partner"-style note still passes.
+                for name in sorted(set(ASK_TOOL_NAMES) - names):
+                    with self.subTest(partner=partner_id, foreign=name):
+                        self._assert_not_advertised(section, name)
                 if raw.get("toolset") == "review":
                     for name in ASK_TOOL_NAMES:
                         with self.subTest(partner=partner_id, forbidden=name):

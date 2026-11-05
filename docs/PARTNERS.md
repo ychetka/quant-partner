@@ -28,7 +28,7 @@ The `*_v2` ask variants take the same arguments and return a JSON object `{"part
 Context placement:
 
 - `context` on `ask_*` tools carries a caller-supplied context/context-pack brief alongside the question.
-- `context` on `*_dialog` tools is added as a leading user turn containing a `## Context` brief, inserted before the supplied history - history messages pass through verbatim. Dialogs are stateless: pass the full `messages` history on every call.
+- `context` on `*_dialog` tools is added as a leading user turn containing a `## Context` brief, inserted before the supplied history - history message contents pass through verbatim; `model` roles are normalized to `assistant` before sending. Dialogs are stateless: pass the full `messages` history on every call.
 - `files` attaches bounded file excerpts (`[{name, content}]`); the server never reads the filesystem.
 - `skill` selects an installed skill pack per call; when omitted, the partner's configured `default_skill` is used. `model` overrides the default model and `role` selects a named model role from the partner's `models` config.
 
