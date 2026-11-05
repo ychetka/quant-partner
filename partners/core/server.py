@@ -65,18 +65,51 @@ class PartnerMCPServer:
         return self._backend
 
     def _toolset(self) -> str:
+        """Configured toolset, or a degraded guess when config failed to load.
+
+        Without a loaded config the real toolset is unknown, so the server
+        falls back to ``code`` for partner ids containing ``copilot`` and
+        to ``product`` for every other id. The fallback keeps ``tools()``
+        and ``call_tool`` dispatching on a stable surface in degraded mode.
+        """
         cfg = self._config
         if cfg:
             return cfg.toolset
         return "code" if "copilot" in self.partner_id else "product"
 
-    def _tool_names(self) -> tuple[str, str]:
+    def _legacy_ask_prefix(self) -> str | None:
+        """Legacy question-tool prefix of the current toolset.
+
+        Every non-review toolset answers on the canonical ``ask_partner*``
+        names. The ``code`` and ``product`` toolsets additionally keep
+        their historical ``ask_code_partner*`` / ``ask_product_partner*``
+        names callable as legacy aliases of the canonical tools; other
+        configured toolsets return ``None``.
+
+        The prefix follows ``_toolset()``, so when the config fails to
+        load it derives from the degraded partner-id fallback (``code``
+        for ids containing ``copilot``, ``product`` otherwise) instead of
+        returning ``None`` - the degraded ``tools()`` surface still
+        advertises the corresponding legacy aliases.
+        """
         toolset = self._toolset()
         if toolset == "code":
-            return "ask_code_partner", "ask_code_partner_dialog"
+            return "ask_code_partner"
         if toolset == "product":
-            return "ask_product_partner", "ask_product_partner_dialog"
-        return "ask_partner", "ask_partner_dialog"
+            return "ask_product_partner"
+        return None
+
+    def _canonical_ask_name(self, name: str) -> str:
+        """Map a legacy ask alias of this toolset to its canonical name.
+
+        ``ask_code_partner_dialog`` on a ``code`` toolset becomes
+        ``ask_partner_dialog``; names outside this toolset's alias family
+        pass through unchanged and fail as unknown tools downstream.
+        """
+        legacy = self._legacy_ask_prefix()
+        if legacy and name.startswith(legacy):
+            return "ask_partner" + name[len(legacy) :]
+        return name
 
     @staticmethod
     def _string_arg(description: str) -> dict[str, str]:
@@ -176,7 +209,6 @@ class PartnerMCPServer:
     def tools(self) -> list[dict[str, Any]]:
         if self._toolset() == "review":
             return self._review_tools()
-        ask, dialog = self._tool_names()
         common_properties = {
             "skill": self._string_arg("Optional skill name from partners/skills/<partner>/<skill>"),
             "model": self._string_arg("Optional model override"),
@@ -205,7 +237,54 @@ class PartnerMCPServer:
             },
             "required": ["question"],
         }
-        return [
+        dialog_schema = {
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "role": {
+                                "type": "string",
+                                "enum": ["user", "assistant", "model"],
+                            },
+                            "text": {"type": "string"},
+                        },
+                        "required": ["role", "text"],
+                    },
+                },
+                "context": self._string_arg(
+                    "Optional caller-supplied context/context-pack brief; "
+                    "added as a leading user context turn before the "
+                    "message history"
+                ),
+                **common_properties,
+            },
+            "required": ["messages"],
+        }
+        ask_tools = [
+            (
+                "ask_partner",
+                "Ask this partner a single stateless question. Pass enough context; "
+                "there is no memory between calls.",
+                ask_schema,
+            ),
+            (
+                "ask_partner_v2",
+                "Ask this partner a single stateless question like the base ask "
+                "tool, but return a JSON object with the answer text plus model "
+                "provenance (model_requested, model_used, model_match).",
+                ask_schema,
+            ),
+            (
+                "ask_partner_dialog",
+                "Continue a partner dialog with message history "
+                "[{role:'user'|'assistant'|'model', text:'...'}].",
+                dialog_schema,
+            ),
+        ]
+        tools = [
             {
                 "name": "partner_info",
                 "description": (
@@ -224,57 +303,20 @@ class PartnerMCPServer:
                 "description": "List pluggable skill packs installed for this partner.",
                 "inputSchema": {"type": "object", "properties": {}},
             },
-            {
-                "name": ask,
-                "description": (
-                    "Ask this partner a single stateless question. Pass enough context; "
-                    "there is no memory between calls."
-                ),
-                "inputSchema": ask_schema,
-            },
-            {
-                "name": f"{ask}_v2",
-                "description": (
-                    "Ask this partner a single stateless question like the base ask "
-                    "tool, but return a JSON object with the answer text plus model "
-                    "provenance (model_requested, model_used, model_match)."
-                ),
-                "inputSchema": ask_schema,
-            },
-            {
-                "name": dialog,
-                "description": (
-                    "Continue a partner dialog with message history "
-                    "[{role:'user'|'assistant'|'model', text:'...'}]."
-                ),
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "messages": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "role": {
-                                        "type": "string",
-                                        "enum": ["user", "assistant", "model"],
-                                    },
-                                    "text": {"type": "string"},
-                                },
-                                "required": ["role", "text"],
-                            },
-                        },
-                        "context": self._string_arg(
-                            "Optional caller-supplied context/context-pack brief; "
-                            "added as a leading user context turn before the "
-                            "message history"
-                        ),
-                        **common_properties,
-                    },
-                    "required": ["messages"],
-                },
-            },
         ]
+        for name, description, schema in ask_tools:
+            tools.append({"name": name, "description": description, "inputSchema": schema})
+        legacy = self._legacy_ask_prefix()
+        if legacy:
+            for name, description, schema in ask_tools:
+                tools.append(
+                    {
+                        "name": legacy + name[len("ask_partner") :],
+                        "description": f"{description} Legacy alias of {name}.",
+                        "inputSchema": schema,
+                    }
+                )
+        return tools
 
     def _partner_info(self) -> str:
         cfg = self._cfg()
@@ -513,11 +555,11 @@ class PartnerMCPServer:
         if name == "list_partner_models":
             models = self._backend_instance().list_models()
             return "\n".join(models) if models else "No models returned by backend."
-        ask, dialog = self._tool_names()
-        if name == ask or name == "ask_partner":
+        canonical = self._canonical_ask_name(name)
+        if canonical == "ask_partner":
             return self._ask(arguments)
-        if name == f"{ask}_v2" or name == "ask_partner_v2":
+        if canonical == "ask_partner_v2":
             return self._ask_v2(arguments)
-        if name == dialog or name == "ask_partner_dialog":
+        if canonical == "ask_partner_dialog":
             return self._dialog(arguments)
         raise PartnerError("invalid_request", f"unknown tool: {name}")

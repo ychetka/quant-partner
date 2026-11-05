@@ -121,23 +121,16 @@ Common tools:
 - `list_partner_models()` - provider models available to the configured account.
 - `list_partner_skills()` - installed skill packs.
 
-`gh-copilot-partner` tools:
-
-- `ask_code_partner(question, context?, files?, skill?, role?, model?)`
-- `ask_code_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_code_partner_dialog(messages, context?, skill?, role?, model?)`
-
-`gemini-product` tools:
-
-- `ask_product_partner(question, context?, files?, skill?, role?, model?)`
-- `ask_product_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_product_partner_dialog(messages, context?, skill?, role?, model?)`
-
-`advisory` toolset tools (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner` and any other partner configured with `"toolset": "advisory"` or an unknown toolset):
+Ask tools (canonical names, advertised by every non-`review` toolset - `gh-copilot-partner`, `gemini-product`, `pm-partner`, `market-partner`, `strategy-partner`, `comms-partner` and any other partner configured with a non-review toolset):
 
 - `ask_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_partner_v2(question, context?, files?, skill?, role?, model?)`
 - `ask_partner_dialog(messages, context?, skill?, role?, model?)`
+
+The `code` toolset (`gh-copilot-partner`, `local-openai-partner`) and the `product` toolset (`gemini-product`) also advertise their historical names as legacy aliases of the canonical ask tools, with the same signatures:
+
+- `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog`
+- `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog`
 
 The `*_v2` ask tools accept the same arguments as the base ask tools but return a structured JSON object instead of bare text: `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}`. `model_requested` is the candidate model that produced the answer, `model_used` is the provider-reported served model (or `null` when the backend reports none), and `model_match` is `true`/`false`/`null` - `null` when `model_used` is absent.
 
@@ -215,7 +208,7 @@ Set `skills_root` in a partner config to share a skill directory across partner 
 
 The `code-reviewer` partner ships two packs: `code-reviewer` (default general review) and `security-reviewer` (advisory defensive security review: injection, authn/authz gaps, secret handling, unsafe deserialization, path traversal, SSRF, crypto misuse, weak randomness and supply-chain red flags). Select one per call through the `skill` argument of `review_code`.
 
-The `gemini-product` partner ships five packs: `product-manager` (default product framing), `prioritization`, `ux-architect`, `spec-compliance-verifier` (advisory spec/diff drift check returning a strict artifact) and `release-manager` (advisory release-note and changelog drafting with semver signal classification). Select one per call through the `skill` argument of the `ask_product_partner*` tools.
+The `gemini-product` partner ships five packs: `product-manager` (default product framing), `prioritization`, `ux-architect`, `spec-compliance-verifier` (advisory spec/diff drift check returning a strict artifact) and `release-manager` (advisory release-note and changelog drafting with semver signal classification). Select one per call through the `skill` argument of the `ask_partner*` tools.
 
 ## Error contract
 
@@ -270,7 +263,7 @@ Run a live call:
 ```bash
 PARTNER_ID=gemini-product \
 PARTNER_CONFIG=partners/config.json \
-python3 tools/mcp_smoke.py --call ask_product_partner --question 'Say OK.'
+python3 tools/mcp_smoke.py --call ask_partner --question 'Say OK.'
 ```
 
 Live calls through provider-backed tools (`ask_*`, `list_partner_models`) require a local `partners/config.json` with real credentials and are intentionally not part of CI.

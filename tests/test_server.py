@@ -68,18 +68,120 @@ class ServerTest(unittest.TestCase):
 
     def test_code_tools(self):
         server = PartnerMCPServer("gh-copilot-partner")
-        names = {tool["name"] for tool in server.tools()}
+        tools = server.tools()
+        names = {tool["name"] for tool in tools}
         self.assertIn("partner_info", names)
         self.assertIn("list_partner_models", names)
         self.assertIn("list_partner_skills", names)
-        self.assertIn("ask_code_partner", names)
-        self.assertIn("ask_code_partner_dialog", names)
+        # Canonical names first, then the code toolset's legacy aliases.
+        ask_names = [tool["name"] for tool in tools if tool["name"].startswith("ask_")]
+        self.assertEqual(
+            ask_names,
+            [
+                "ask_partner",
+                "ask_partner_v2",
+                "ask_partner_dialog",
+                "ask_code_partner",
+                "ask_code_partner_v2",
+                "ask_code_partner_dialog",
+            ],
+        )
 
     def test_product_tools(self):
         server = PartnerMCPServer("gemini-product")
-        names = {tool["name"] for tool in server.tools()}
-        self.assertIn("ask_product_partner", names)
-        self.assertIn("ask_product_partner_dialog", names)
+        tools = server.tools()
+        ask_names = [tool["name"] for tool in tools if tool["name"].startswith("ask_")]
+        self.assertEqual(
+            ask_names,
+            [
+                "ask_partner",
+                "ask_partner_v2",
+                "ask_partner_dialog",
+                "ask_product_partner",
+                "ask_product_partner_v2",
+                "ask_product_partner_dialog",
+            ],
+        )
+
+    def test_legacy_alias_descriptions_are_marked(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        tools = {tool["name"]: tool for tool in server.tools()}
+        for alias, canonical in (
+            ("ask_code_partner", "ask_partner"),
+            ("ask_code_partner_v2", "ask_partner_v2"),
+            ("ask_code_partner_dialog", "ask_partner_dialog"),
+        ):
+            with self.subTest(alias=alias):
+                self.assertTrue(
+                    tools[alias]["description"].endswith(f"Legacy alias of {canonical}."),
+                    tools[alias]["description"],
+                )
+                self.assertEqual(tools[alias]["inputSchema"], tools[canonical]["inputSchema"])
+
+    def test_legacy_alias_dispatches_like_canonical(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="answer text")
+        args = {"question": "q?"}
+        self.assertEqual(
+            server.call_tool("ask_code_partner", args),
+            server.call_tool("ask_partner", args),
+        )
+        self.assertEqual(
+            json.loads(server.call_tool("ask_code_partner_v2", args)),
+            json.loads(server.call_tool("ask_partner_v2", args)),
+        )
+        dialog_args = {"messages": [{"role": "user", "text": "hi"}]}
+        self.assertEqual(
+            server.call_tool("ask_code_partner_dialog", dialog_args),
+            server.call_tool("ask_partner_dialog", dialog_args),
+        )
+
+    def test_product_legacy_alias_dispatches_like_canonical(self):
+        server = PartnerMCPServer("gemini-product")
+        server._backend = ExBackend(text="answer text")
+        args = {"question": "q?"}
+        self.assertEqual(
+            server.call_tool("ask_product_partner", args),
+            server.call_tool("ask_partner", args),
+        )
+        self.assertEqual(
+            json.loads(server.call_tool("ask_product_partner_v2", args)),
+            json.loads(server.call_tool("ask_partner_v2", args)),
+        )
+        dialog_args = {"messages": [{"role": "user", "text": "hi"}]}
+        self.assertEqual(
+            server.call_tool("ask_product_partner_dialog", dialog_args),
+            server.call_tool("ask_partner_dialog", dialog_args),
+        )
+
+    def test_foreign_toolset_alias_rejected(self):
+        foreign_aliases = {
+            "gh-copilot-partner": (
+                "ask_product_partner",
+                "ask_product_partner_v2",
+                "ask_product_partner_dialog",
+            ),
+            "gemini-product": (
+                "ask_code_partner",
+                "ask_code_partner_v2",
+                "ask_code_partner_dialog",
+            ),
+        }
+        for partner_id, aliases in foreign_aliases.items():
+            for foreign in aliases:
+                args = (
+                    {"messages": [{"role": "user", "text": "hi"}]}
+                    if foreign.endswith("_dialog")
+                    else {"question": "q?"}
+                )
+                with self.subTest(partner=partner_id, foreign=foreign):
+                    server = PartnerMCPServer(partner_id)
+                    server._backend = ExBackend()
+                    with self.assertRaises(PartnerError) as ctx:
+                        server.call_tool(foreign, args)
+                    self.assertEqual(ctx.exception.code, "invalid_request")
+                    self.assertIn("unknown tool", ctx.exception.message)
+                    self.assertEqual(server._backend.calls, [])
 
     def test_partner_info(self):
         server = PartnerMCPServer("gh-copilot-partner")
@@ -124,15 +226,21 @@ class ServerTest(unittest.TestCase):
     def test_ask_v2_tool_registered_with_same_schema(self):
         server = PartnerMCPServer("gh-copilot-partner")
         tools = {tool["name"]: tool for tool in server.tools()}
+        self.assertIn("ask_partner_v2", tools)
         self.assertIn("ask_code_partner_v2", tools)
         self.assertEqual(
+            tools["ask_partner_v2"]["inputSchema"],
+            tools["ask_partner"]["inputSchema"],
+        )
+        self.assertEqual(
             tools["ask_code_partner_v2"]["inputSchema"],
-            tools["ask_code_partner"]["inputSchema"],
+            tools["ask_partner_v2"]["inputSchema"],
         )
 
     def test_product_ask_v2_registered(self):
         server = PartnerMCPServer("gemini-product")
         names = {tool["name"] for tool in server.tools()}
+        self.assertIn("ask_partner_v2", names)
         self.assertIn("ask_product_partner_v2", names)
         self.assertNotIn("ask_code_partner_v2", names)
 
@@ -220,10 +328,10 @@ class ServerTest(unittest.TestCase):
     def test_dialog_tool_schema_exposes_context(self):
         server = PartnerMCPServer("gh-copilot-partner")
         tools = {tool["name"]: tool for tool in server.tools()}
-        properties = tools["ask_code_partner_dialog"]["inputSchema"]["properties"]
+        properties = tools["ask_partner_dialog"]["inputSchema"]["properties"]
         self.assertIn("context", properties)
         self.assertEqual(properties["context"]["type"], "string")
-        self.assertEqual(tools["ask_code_partner_dialog"]["inputSchema"]["required"], ["messages"])
+        self.assertEqual(tools["ask_partner_dialog"]["inputSchema"]["required"], ["messages"])
 
     def test_dialog_context_added_as_leading_user_turn(self):
         server = PartnerMCPServer("gh-copilot-partner")
