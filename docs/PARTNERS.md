@@ -1,0 +1,320 @@
+<!--
+Copyright (c) 2026 Alexandr Varenic / ychetka.
+SPDX-License-Identifier: MIT
+-->
+
+# Partner usage and routing map
+
+## Overview
+
+`quant-partner` is a small MCP bridge that lets an AI assistant consult specialized LLM partners through a consistent tool interface. One Python entrypoint (`partners/mcp_partner.py`) runs every partner instance; each instance combines a backend adapter, a base harness contract and pluggable skill packs. Configuration, secrets and the error contract are documented in [README.md](../README.md); this document describes what each partner is for, which tools it exposes and which partner to route a question to.
+
+Every partner is advisory, stateless and text-in/text-out. No partner writes code, merges pull requests, publishes comments or keeps memory between calls - the caller supplies all context on every call and decides what to do with the answer.
+
+## How to call a partner
+
+Each partner is a separate MCP stdio server process. The instance is selected by the `PARTNER_ID` environment variable and the config file by `PARTNER_CONFIG` (default `partners/config.json`); see [README.md](../README.md) for client registration JSON and the `QP_AUTH_*` / `QP_MODEL_*` environment overrides. Register one server entry per partner you want to use.
+
+The tool surface depends on the partner's configured `toolset`:
+
+- Common tools (all non-review toolsets): `partner_info()`, `list_partner_models()`, `list_partner_skills()`.
+- `code` toolset (`gh-copilot-partner`, `local-openai-partner`): `ask_code_partner(question, context?, files?, skill?, role?, model?)`, `ask_code_partner_v2(...)`, `ask_code_partner_dialog(messages, context?, skill?, role?, model?)`.
+- `product` toolset (`gemini-product`): `ask_product_partner(...)`, `ask_product_partner_v2(...)`, `ask_product_partner_dialog(...)` with the same signatures.
+- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` with the same signatures.
+- `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
+
+The `*_v2` ask variants take the same arguments and return a JSON object `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}` instead of bare text, exposing model provenance.
+
+Context placement:
+
+- `context` on `ask_*` tools carries a caller-supplied context/context-pack brief alongside the question.
+- `context` on `*_dialog` tools is prepended to the first message as a `## Context` section. Dialogs are stateless: pass the full `messages` history on every call.
+- `files` attaches bounded file excerpts (`[{name, content}]`); the server never reads the filesystem.
+- `skill` selects an installed skill pack per call; when omitted, the partner's configured `default_skill` is used. `model` overrides the default model and `role` selects a named model role from the partner's `models` config.
+
+## gh-copilot-partner
+
+Engineering, architecture and debugging consultations through direct GitHub Copilot API access (`copilot-direct` backend). Senior-architect persona: reasons about stack choices, module boundaries, refactoring and debugging strategy, and challenges weak designs instead of agreeing.
+
+- Toolset: `code` - `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` plus the common tools.
+- Default skill: `software-architect`.
+- Skills root: `skills/gh-copilot-partner`.
+
+| Skill | When to use |
+| --- | --- |
+| `software-architect` | Use for system design, service decomposition, data flow, backend/frontend boundaries and architecture review. |
+| `polyglot-developer` | Use for implementation planning, dependency choice, code structure, refactoring steps and language-specific trade-offs. |
+| `code-reviewer` | Use for reviewing diffs, architecture patches, protocol code, error handling, security-sensitive paths and test plans. |
+
+Call it when:
+
+- You need an architecture or stack trade-off analyzed (sync vs async, monolith vs split, dependency choice).
+- You want a debugging strategy for a failure with symptoms, logs and a current hypothesis.
+- You need a refactoring or migration plan sequenced into safe steps.
+- You want a conversational second look at a design doc, API boundary or patch.
+- You need to pick between implementation approaches with operational cost in mind.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_code_partner", "arguments": {"question": "Should retry/backoff live in the shared HTTP helper or in each backend adapter?", "context": "Stdlib-only MCP bridge; three backend adapters behind core/server.py; per-partner timeout_seconds; no third-party dependencies allowed.", "skill": "software-architect"}}}
+```
+
+Boundary notes: advisory only - it proposes designs, the caller implements and verifies. Direct Copilot access is compatibility-sensitive; trust `list_partner_models()` over hardcoded model names. Never send secrets; the harness itself refuses to request credentials.
+
+## gemini-product
+
+Product management, UX and release consultations through the Gemini API. Product-manager persona: turns ambiguous ideas into a valuable, usable and measurable product, prefers narrow testable MVPs and makes uncertainty explicit.
+
+- Toolset: `product` - `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` plus the common tools.
+- Default skill: `product-manager`.
+- Skills root: `skills/gemini-product`.
+
+| Skill | When to use |
+| --- | --- |
+| `product-manager` | Use for product requirements, feature evaluation, MVP cuts, user journeys, roadmap and value hypothesis. |
+| `prioritization` | Use for roadmap ordering, MVP cuts, trade-off decisions, RICE-style scoring and deciding what to defer. |
+| `ux-architect` | Use for tool UX, interaction flows, naming, API ergonomics, error states, onboarding and operator experience. |
+| `spec-compliance-verifier` | Use to check an implementation diff against spec text and acceptance criteria; returns a strict JSON advisory artifact, never a merge decision. |
+| `release-manager` | Use to draft release notes or changelog entries from supplied change summaries and PR lists, classify the semver bump signal and flag missing changelog coverage; advisory drafts only. |
+
+Call it when:
+
+- You need a feature idea framed as user value, MVP scope and success metrics.
+- You want a roadmap or backlog ordered under explicit trade-offs.
+- You need release notes or a changelog draft from a PR/change list, with a semver signal.
+- You want an advisory drift check between spec text, acceptance criteria and a diff summary.
+- You need UX review of tool surfaces: flows, naming, error states, onboarding.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_product_partner", "arguments": {"question": "Draft release notes from this merged-PR list and classify the semver bump signal.", "context": "Merged since v0.1.15: #31 env overrides for partner auth, #34 reviewer cache TTL fix, #36 routing docs.", "skill": "release-manager"}}}
+```
+
+Boundary notes: advisory only. `spec-compliance-verifier` returns a strict JSON advisory artifact - never a merge decision. `prioritization` pins its own model in the manifest, so per-skill model overrides are intentional.
+
+## code-reviewer
+
+Strict advisory second-opinion review of unified diffs through the `review` toolset. Unlike the conversational partners it returns exactly one schema-valid JSON artifact per call (`status` is `ok`, `rejected` or `error`), with model provenance enforced by `strict_model` and an allowlist of model aliases instead of free-form model IDs.
+
+- Toolset: `review` - `partner_info`, `list_partner_skills`, `list_reviewer_models`, `review_code`. No `ask_*` tools and no `list_partner_models`.
+- Default skill: `code-reviewer`.
+- Skills root: `skills/code-reviewer`.
+- The full contract - required arguments, `strict_model` provenance, artifact caching, repair retry and input limits - is documented in [README.md](../README.md) under "Advisory code review".
+
+| Skill | When to use |
+| --- | --- |
+| `code-reviewer` | Used by the review_code tool for an independent, non-binding review of a pull-request diff. |
+| `security-reviewer` | Used by the review_code tool via its optional skill argument for an independent, non-binding security review of a pull-request diff. |
+
+Call it when:
+
+- You have a unified diff in hand and want an independent second opinion before merge.
+- You want a defensive security pass on a diff (injection, authn/authz gaps, secret handling, deserialization, path traversal, SSRF, crypto misuse).
+- You need a stable, schema-valid artifact (`ok`/`rejected`/`error`) that downstream automation can consume, not prose.
+- You need the result pinned to an allowlisted model with provider-confirmed provenance.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "review_code", "arguments": {"head_sha": "<40-hex PR head sha>", "base_sha": "<40-hex PR base sha>", "diff": "diff --git a/partners/core/http.py b/partners/core/http.py\n...", "model": "claude", "skill": "security-reviewer", "context": "Second-opinion security pass on the outbound request path."}}}
+```
+
+Boundary notes: `advisory` is always `true` - the artifact never authorizes a merge, never publishes reviews or comments, and every finding is anchored to a path and RIGHT-side line in the supplied diff. Oversized, unsafe or secret-like input is rejected before any provider access.
+
+## pm-partner
+
+Pragmatic B2B product-management advisory through the Gemini API. Turns ambiguous product ideas into a focused, testable and economically grounded plan: Value Proposition Canvas, MVP scoping, backlog prioritization and unit economics with explicit formulas.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `product-manager`.
+- Skills root: `skills/pm-partner`.
+
+| Skill | When to use |
+| --- | --- |
+| `product-manager` | Use for product requirements, feature evaluation, MVP scope, RICE/ICE/MoSCoW prioritization and LTV/CAC/payback/churn/ROI reasoning. |
+
+Call it when:
+
+- You need a Value Proposition Canvas: customer jobs, pains and gains mapped to features.
+- You want an MVP scope cut that validates the riskiest hypothesis first.
+- You need backlog items scored or tiered with RICE, ICE or MoSCoW.
+- You want unit-economics reasoning: LTV, CAC, LTV/CAC, payback period, churn, ROI - with formulas shown.
+- You need missing inputs surfaced as explicit questions or labeled assumptions.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Score these five backlog items with RICE and propose the MVP cut.", "context": "Items with caller-supplied reach/impact/confidence/effort estimates: ... Target segment: mid-market finance teams.", "skill": "product-manager"}}}
+```
+
+Boundary notes: works only on caller-supplied metrics, inputs and assumptions - it never invents numbers, benchmarks or market data, and asks or states a labeled assumption when an input is missing.
+
+## market-partner
+
+Market-analysis advisory through the Gemini API. Turns caller-supplied market signals into structured analysis: segmentation, personas, competitor matrices and TAM/SAM/SOM estimation. It helps the caller think clearly about a market; it does not research one.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `market-synthesis`.
+- Skills root: `skills/market-partner`.
+
+| Skill | When to use |
+| --- | --- |
+| `market-synthesis` | Use for competitor matrices, market segmentation, personas, trend synthesis and market sizing built from signals the caller provides. |
+
+Call it when:
+
+- You have a competitor list and attributes and want a comparison matrix.
+- You need market segmentation or personas built from observed signals.
+- You want a TAM/SAM/SOM estimate from your own assumptions, with formulas.
+- You need a trend synthesis or a structured read of signals you collected.
+- You want the list of exactly which data to collect next to firm up the analysis.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Build a competitor matrix from these signals and estimate TAM bottom-up.", "context": "Caller-supplied competitors: A (pricing, segment, differentiators), B (...); assumed target accounts: 1200; assumed ARPA: $400/mo.", "skill": "market-synthesis"}}}
+```
+
+Boundary notes - the no-live-data boundary is explicit in its contract: NO live data, NO web access, NO automatic competitor monitoring and no "Big Data" feed. Every output is synthesized only from signals supplied in `question`, `context` and `files`; TAM/SAM/SOM figures are estimations from caller assumptions and are labeled as such, never as observed numbers.
+
+## strategy-partner
+
+Strategy-consulting advisory through the Gemini API. Provides structured strategic thinking: named frameworks on request (SWOT, PESTEL, Porter's Five Forces, BCG matrix), growth-hypothesis generation and risk registers, with explicit assumptions and confidence labels.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `strategy-consultant`.
+- Skills root: `skills/strategy-partner`.
+
+| Skill | When to use |
+| --- | --- |
+| `strategy-consultant` | Use for SWOT, PESTEL, Porter's Five Forces or BCG analysis, growth-hypothesis generation, strategic options and risk register drafting. |
+
+Call it when:
+
+- You want a named framework applied: SWOT, PESTEL, Porter's Five Forces or BCG.
+- You need growth hypotheses stated as testable levers with confirming metrics.
+- You want a risk register: risk, likelihood, impact, early indicator, mitigation, owner.
+- You need strategic options compared with explicit assumptions and confidence labels.
+- You want a strategy challenged for unexamined assumptions.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Run a Porter's Five Forces pass on this market and draft a risk register for the expansion option.", "context": "Caller-supplied market inputs, current position and the two options under consideration: ...", "skill": "strategy-consultant"}}}
+```
+
+Boundary notes: frameworks and assumptions are reasoning aids, not verified market facts - there is no live data or research access and every output is built only from caller-supplied inputs, with confidence labels separating evidence from judgment.
+
+## comms-partner
+
+Communication and interface partner for long-running projects through the Gemini API. Drafts investor updates and stakeholder messaging, adapts tone deliberately between registers (investor-formal versus founder-supportive) and runs Socratic dialogs that surface what the caller actually knows and decides.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `communication`.
+- Skills root: `skills/comms-partner`.
+
+| Skill | When to use |
+| --- | --- |
+| `communication` | Use for investor updates, stakeholder messaging, founder conversations, interview-style elicitation and anything that needs the project brief as memory. |
+
+Call it when:
+
+- You need an investor update, stakeholder message or announcement drafted honestly.
+- You want tone adapted to an audience: investor-formal (precise, metric-anchored) versus founder-supportive (direct, honest, no flattery).
+- You want a Socratic dialog - one focused question at a time - to elicit a decision or articulate a position.
+- You want contradictions between the current question and the project brief flagged.
+- You need the closest thing to long-term project memory: pass the brief every call.
+
+Example (dialog with a context pack):
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner_dialog", "arguments": {"context": "<contents of the filled partners/context-pack/CONTEXT_PACK.md brief>", "messages": [{"role": "user", "text": "Help me prepare the monthly investor update."}], "skill": "communication"}}}
+```
+
+Context-pack protocol: the server is stateless and keeps no memory between calls. Persistent context works through the caller-managed context pack - fill [partners/context-pack/CONTEXT_PACK.md](../partners/context-pack/CONTEXT_PACK.md) once per venture and pass it in the `context` field of each call. The partner treats the supplied brief as the memory substitute and the single source of truth about the venture, and says so when no brief was provided instead of pretending continuity.
+
+Boundary notes: drafts are honest and verifiable - no inflated claims, no invented metrics, no promises the brief does not support. Treat the brief as sensitive: it leaves the caller's machine to the configured provider.
+
+## local-openai-partner
+
+Disabled-by-default partner that talks to any OpenAI-compatible HTTP endpoint through the `openai-compatible` backend - self-hosted models, local proxies or corporate gateways. It shares the `gh-copilot-partner` harness contract and skill packs, so it answers the same engineering persona once pointed at an endpoint.
+
+- Toolset: `code` - `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` plus the common tools.
+- Default skill: `software-architect`.
+- Skills root: `skills/gh-copilot-partner` (shared with `gh-copilot-partner` via `skills_root`).
+- Disabled in `partners/config.example.json`; enable it only in a local `partners/config.json`.
+
+| Skill | When to use |
+| --- | --- |
+| `software-architect` | Use for system design, service decomposition, data flow, backend/frontend boundaries and architecture review. |
+| `polyglot-developer` | Use for implementation planning, dependency choice, code structure, refactoring steps and language-specific trade-offs. |
+| `code-reviewer` | Use for reviewing diffs, architecture patches, protocol code, error handling, security-sensitive paths and test plans. |
+
+Call it when:
+
+- You want the code-partner tool surface backed by an endpoint you control (Ollama, vLLM, a proxy or an internal gateway).
+- You need a reference config for wiring a custom OpenAI-compatible deployment: `options.openai.base_url`, optional `auth.api_key`, `model` and `generation`.
+- You want no-secret testing of the full pipeline against `tools/fake_openai_server.py`.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_code_partner", "arguments": {"question": "Critique this module boundary proposal for the ingest pipeline.", "context": "Offline transcript ingest tool; stdlib-only; bounded local cache keyed by content hash.", "skill": "polyglot-developer"}}}
+```
+
+Boundary notes: `options.openai.base_url` can be any host, so enabling this partner sends prompts and file context to that endpoint - enable it only for endpoints you intend. Endpoint contract and the `model_used` echo caveat are documented in [README.md](../README.md); the bundled fake server provides deterministic loopback testing without secrets.
+
+## Routing map
+
+| Question archetype | Partner | Skill | Tool | Notes |
+| --- | --- | --- | --- | --- |
+| Architecture / stack trade-off | `gh-copilot-partner` | `software-architect` | `ask_code_partner` | System design, boundaries, decomposition |
+| Implementation plan / dependency choice | `gh-copilot-partner` | `polyglot-developer` | `ask_code_partner` | Language and library trade-offs |
+| Debugging strategy | `gh-copilot-partner` | `polyglot-developer` | `ask_code_partner` | Paste symptoms, logs and hypothesis in `question`/`context` |
+| Conversational code review | `gh-copilot-partner` | `code-reviewer` | `ask_code_partner` | Prose review of a pasted patch or design |
+| Second-opinion diff review (strict artifact) | `code-reviewer` | `code-reviewer` | `review_code` | Unified diff in hand; JSON artifact, `ok`/`rejected`/`error` |
+| Security review of a diff | `code-reviewer` | `security-reviewer` | `review_code` | `skill` argument selects the pack |
+| Product spec / MVP scope | `pm-partner` | `product-manager` | `ask_partner` | B2B framing with unit economics; `gemini-product`/`product-manager` as alternative |
+| Backlog prioritization (RICE/ICE/MoSCoW) | `pm-partner` | `product-manager` | `ask_partner` | `gemini-product`/`prioritization` as alternative |
+| Unit economics (LTV/CAC/payback/churn/ROI) | `pm-partner` | `product-manager` | `ask_partner` | Formulas shown; missing inputs become questions |
+| PR/issue/release triage, release notes | `gemini-product` | `release-manager` | `ask_product_partner` | Changelog drafts and semver signal; advisory only |
+| Spec compliance check (diff vs spec) | `gemini-product` | `spec-compliance-verifier` | `ask_product_partner` | Strict JSON advisory artifact, never a merge decision |
+| UX / interaction / API ergonomics | `gemini-product` | `ux-architect` | `ask_product_partner` | Flows, naming, error states, onboarding |
+| Roadmap ordering / scope cuts | `gemini-product` | `prioritization` | `ask_product_partner` | Pins its own manifest model |
+| Market sizing / competitor matrix | `market-partner` | `market-synthesis` | `ask_partner` | Caller supplies signals; TAM/SAM/SOM labeled estimations |
+| Segmentation / personas / trend synthesis | `market-partner` | `market-synthesis` | `ask_partner` | No live data or monitoring |
+| Strategy frameworks (SWOT/PESTEL/Porter5/BCG) | `strategy-partner` | `strategy-consultant` | `ask_partner` | Named framework on request only |
+| Growth hypotheses / risk register | `strategy-partner` | `strategy-consultant` | `ask_partner` | Assumptions carry confidence labels |
+| Investor update / stakeholder communication | `comms-partner` | `communication` | `ask_partner` | Pass the context pack in `context` |
+| Founder coaching / elicitation | `comms-partner` | `communication` | `ask_partner_dialog` | Socratic: one focused question at a time |
+| Long-term project memory | `comms-partner` | `communication` | `ask_partner` / `ask_partner_dialog` | Caller-managed context pack every call |
+| Video / meeting Q&A | `media-partner` | `media-analysis` | `ask_partner` | Planned (issue #37); transcript via `context` after `tools/media_ingest.py` |
+| Self-hosted / OpenAI-compatible endpoint | `local-openai-partner` | `software-architect` | `ask_code_partner` | Disabled by default; enable only for endpoints you control |
+
+Decision rules:
+
+- A unified diff in hand and a strict, automation-consumable artifact - use the `review` toolset on `code-reviewer`; for a conversational read of a patch, `gh-copilot-partner` with the `code-reviewer` skill instead.
+- A business question - pick the specialist by domain: `pm-partner` for product economics, `market-partner` for market synthesis, `strategy-partner` for frameworks and risk, `gemini-product` for UX, release and spec-drift work.
+- A conversation, a draft or anything that needs the venture brief - `comms-partner` with the context pack in `context`.
+- An engineering question - `gh-copilot-partner` (or `local-openai-partner` when a self-hosted endpoint is configured).
+- When partners overlap - for example `pm-partner` versus `gemini-product` on MVP scope - prefer `pm-partner` for economics-heavy B2B framing and `gemini-product` for UX, release-note and spec-compliance work.
+
+## media-partner (planned - issue #37)
+
+PLANNED - not shipped. `media-partner` is a designed advisory instance for transcript-based video and audio Q&A: questions like "what did participants say about X" or "what decision was made" over YouTube, video.optimacros.com and local-file sources.
+
+The planned split is an offline `tools/media_ingest.py` script (not the MCP server) that turns a media reference into a content-hash-keyed `transcript.json`, plus a normal `advisory` partner instance with a `media-analysis` skill. Callers pass the transcript through `context` (or dialog) on ordinary `ask_partner` / `ask_partner_dialog` calls - no new toolset in v1, and the partner stays text-in/text-out. Re-analysis is prevented by reusing the ingestion artifact, never by caching answers.
+
+Until it ships there is nothing to register: today, paste a caller-supplied transcript into `context` on any advisory partner for the same effect. Design details live in `.devin/plan_media_partner.md`.
+
+## Capability boundaries
+
+- Advisory only: no partner merges, publishes, executes or authorizes anything. The caller decides what reaches code or stakeholders.
+- Stateless: no server-side memory between calls; pass `question`, `context`, `files` and full `messages` history every time.
+- No web access and no live data: partners reason only over caller-supplied signals. There is no automatic competitor or metric monitoring behind any of them.
+- Long-term memory is caller-managed: context packs (template at [partners/context-pack/CONTEXT_PACK.md](../partners/context-pack/CONTEXT_PACK.md)) are the memory substitute.
+- No secrets in calls: never send tokens, credentials or personal data in questions, context or files. `partners/config.json` holds secrets locally and is gitignored.
+- Supplied material is treated as untrusted content; briefs, diffs and transcripts may be sensitive - they are forwarded to the configured provider backend. For `local-openai-partner`, that means whatever `options.openai.base_url` points at.
+- Estimates such as TAM/SAM/SOM are labeled estimations from caller assumptions, not observed data.

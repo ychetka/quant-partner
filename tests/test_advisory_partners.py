@@ -20,6 +20,7 @@ from core.config import (  # noqa: E402
 from core.server import PartnerMCPServer  # noqa: E402
 
 CONFIG_EXAMPLE = ROOT / "partners" / "config.example.json"
+PARTNERS_DOC = ROOT / "docs" / "PARTNERS.md"
 
 ADVISORY_PARTNERS = {
     "pm-partner": {
@@ -211,6 +212,40 @@ class AdvisoryHarnessTest(unittest.TestCase):
                 cfg = _cfg(partner_id)
                 prompt = compose_system_prompt(cfg, load_skill(cfg))
                 self.assertNotIn("SPDX-License-Identifier", prompt)
+
+
+class PartnersDocTest(unittest.TestCase):
+    """docs/PARTNERS.md must cover every configured partner and installed skill."""
+
+    def _doc_text(self):
+        return PARTNERS_DOC.read_text(encoding="utf-8")
+
+    def _configured_partners(self):
+        data = json.loads(CONFIG_EXAMPLE.read_text(encoding="utf-8"))
+        return data["partners"]
+
+    def _skill_manifests(self, partner_id, raw):
+        skills_root = raw.get("skills_root") or f"skills/{partner_id}"
+        root = ROOT / "partners" / skills_root
+        for directory in sorted(p for p in root.iterdir() if p.is_dir()):
+            manifest_path = directory / "manifest.json"
+            if manifest_path.exists():
+                yield json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    def test_every_configured_partner_id_is_documented(self):
+        text = self._doc_text()
+        for partner_id in self._configured_partners():
+            with self.subTest(partner=partner_id):
+                self.assertIn(partner_id, text)
+
+    def test_every_installed_skill_name_is_documented(self):
+        text = self._doc_text()
+        for partner_id, raw in self._configured_partners().items():
+            for manifest in self._skill_manifests(partner_id, raw):
+                name = str(manifest.get("name", ""))
+                with self.subTest(partner=partner_id, skill=name):
+                    self.assertTrue(name)
+                    self.assertIn(name, text)
 
 
 if __name__ == "__main__":
