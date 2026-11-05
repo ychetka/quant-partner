@@ -82,8 +82,36 @@ class PartnerConfig:
 
 
 def is_placeholder(value: str) -> bool:
+    """True for empty values, explicit marker texts and env-var-style names.
+
+    The value is stripped first, so ``" GITHUB_TOKEN "`` and a
+    whitespace-only string behave exactly like ``"GITHUB_TOKEN"`` and
+    ``""``. Besides the marker substrings in ``_PLACEHOLDERS``, a bare
+    environment-variable-style name - uppercase letters, digits,
+    underscores or hyphens only, at least six characters, with at least
+    one letter - counts as a placeholder (for example ``GITHUB_TOKEN``
+    or ``MY_API_KEY`` left over from a template). Real provider
+    credentials are almost never shaped like that: GitHub tokens start
+    ``ghp_``/``github_pat_``, OpenAI keys start ``sk`` and Google keys are
+    mixed-case (``AIza...``), so the conservative all-uppercase rule does
+    not swallow them. A rare genuinely all-uppercase token would be a
+    false positive; supply it through a ``QP_AUTH_*`` env override or
+    rename it in that case.
+    """
+    value = value.strip()
     upper = value.upper()
-    return not value or any(marker in upper for marker in _PLACEHOLDERS)
+    if not value or any(marker in upper for marker in _PLACEHOLDERS):
+        return True
+    # Env-var-name heuristic: all-uppercase identifier-shaped values are
+    # placeholder names, not secrets. ``value == upper`` guarantees every
+    # letter is uppercase; the charset check rejects tokens containing
+    # punctuation such as ``.`` or ``=``.
+    return (
+        len(value) >= 6
+        and value == upper
+        and any(c.isalpha() for c in value)
+        and all(c.isalnum() or c in "_-" for c in value)
+    )
 
 
 def config_path(environ: Mapping[str, str] | None = None) -> Path:

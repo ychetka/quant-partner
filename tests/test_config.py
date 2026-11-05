@@ -18,6 +18,7 @@ from core.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     compose_system_prompt,
     config_path,
+    is_placeholder,
     list_skills,
     load_partner_config,
     load_skill,
@@ -114,6 +115,70 @@ class ConfigTest(unittest.TestCase):
     def test_strip_license_keeps_prompt_heading(self):
         text = "# Copyright x\n# SPDX-License-Identifier: MIT\n\n# Skill: Test\nBody"
         self.assertEqual(strip_license_header(text), "# Skill: Test\nBody")
+
+
+class PlaceholderTest(unittest.TestCase):
+    def test_empty_and_marker_values_are_placeholders(self):
+        for value in (
+            "",
+            "REPLACE_ME",
+            "YOUR_TOKEN",
+            "TOKEN_HERE",
+            "MY_KEY_HERE",
+            "GEMINI_API_KEY_HERE",
+            "example-value",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(is_placeholder(value))
+
+    def test_env_var_style_names_are_placeholders(self):
+        for value in (
+            "GITHUB_TOKEN",
+            "MY_API_KEY",
+            "SOME-SECRET_NAME",
+            "ABC123_DEF",
+            "ABCDEF",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(is_placeholder(value))
+
+    def test_real_token_shapes_are_not_placeholders(self):
+        for value in (
+            "ghp_abc123xyz",
+            "github_pat_11ABCDEFG",
+            "gho_XYZ123",
+            # Explicit concat keeps the OpenAI-style prefix split across
+            # literals (no token-shaped substring in the source) while
+            # staying stable under ruff format.
+            "sk" + "-proj-abc123DEF",
+            "AIzaSyD4iE2xVSpkLlo9Kk",
+            "abc123",
+            "123456",
+            "mixedCaseName",
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(is_placeholder(value))
+
+    def test_short_or_alpha_free_uppercase_is_not_placeholder(self):
+        # Below the length-6 floor or with no letter at all the value does
+        # not look like an env-var name and keeps counting as a secret.
+        for value in ("ABC", "123-456_789", "A1"):
+            with self.subTest(value=value):
+                self.assertFalse(is_placeholder(value))
+
+    def test_surrounding_whitespace_is_stripped_before_checks(self):
+        # Padded markers and env-var names count as placeholders exactly
+        # like their stripped forms; a whitespace-only value is empty.
+        for value in (" GITHUB_TOKEN ", "\tYOUR_TOKEN\n", "   "):
+            with self.subTest(value=value):
+                self.assertTrue(is_placeholder(value))
+
+    def test_padded_non_placeholders_stay_non_placeholders(self):
+        # Stripping never invents a placeholder: padded real-token shapes
+        # and digits-only values still count as configured secrets.
+        for value in (" ghp_abc123xyz ", " 123456 \n", "\tmixedCaseName "):
+            with self.subTest(value=value):
+                self.assertFalse(is_placeholder(value))
 
 
 class EnvOverrideTest(unittest.TestCase):

@@ -68,7 +68,19 @@ def handle_message(server: ToolServer, msg: dict[str, Any]) -> None:
             text = sanitize(e.to_text(), server.secrets())
             _result(rid, {"isError": True, "content": [{"type": "text", "text": text}]})
         except Exception as e:
-            log(f"internal error in {name}: {type(e).__name__}")
+            try:
+                # Keep stderr a JSONL event stream: emit the failure as a
+                # structured record (never the exception text) instead of
+                # a bare prose line.
+                record = {
+                    "event": "internal_error",
+                    "tool": name,
+                    "error_class": type(e).__name__,
+                }
+                line = json.dumps(record, ensure_ascii=False, sort_keys=True)
+                log(sanitize(line, server.secrets()))
+            except Exception:
+                pass
             text = "ERROR internal_error: partner backend failed; check server logs"
             _result(rid, {"isError": True, "content": [{"type": "text", "text": text}]})
     elif rid is not None:
