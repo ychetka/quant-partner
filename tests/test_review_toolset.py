@@ -551,11 +551,17 @@ class ReviewToolsetTest(unittest.TestCase):
     # -- bounded repair retry -------------------------------------------------
 
     def _log_records(self):
-        return [
-            json.loads(line)
-            for line in self.stderr.getvalue().splitlines()
-            if '"review_code"' in line
-        ]
+        # ``tools/call`` also emits a ``partner_call`` record whose ``tool``
+        # field may contain the literal name ``review_code``; filter on the
+        # parsed ``event`` field, not on a raw substring.
+        records = []
+        for line in self.stderr.getvalue().splitlines():
+            if '"review_code"' not in line:
+                continue
+            record = json.loads(line)
+            if record.get("event") == "review_code":
+                records.append(record)
+        return records
 
     def test_malformed_then_valid_output_is_repaired_once(self):
         backend = ScriptedBackend(
@@ -1032,7 +1038,13 @@ class ReviewToolsetTest(unittest.TestCase):
         log_text = self.stderr.getvalue()
         self.assertNotIn(sentinel_diff, log_text)
         self.assertNotIn(sentinel_ctx, log_text)
-        records = [json.loads(line) for line in log_text.splitlines() if '"review_code"' in line]
+        records = [
+            parsed
+            for parsed in (
+                json.loads(line) for line in log_text.splitlines() if '"review_code"' in line
+            )
+            if parsed.get("event") == "review_code"
+        ]
         self.assertEqual(len(records), 1)
         record = records[0]
         for key in (

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from typing import Any
 
 from backends.base import CompletionResult
@@ -18,11 +20,12 @@ from .config import (
     PartnerConfig,
     Skill,
     compose_system_prompt,
+    config_path,
     list_skills,
     load_partner_config,
     load_skill,
 )
-from .errors import PartnerError, invalid_config
+from .errors import PartnerError, invalid_config, sanitize
 
 
 class PartnerMCPServer:
@@ -30,7 +33,14 @@ class PartnerMCPServer:
         self.partner_id = partner_id
         self._config: PartnerConfig | None = None
         self._config_error: PartnerError | None = None
+        self._config_reload_error: str | None = None
         self._backend: Any = None
+        self._call_meta: dict[str, Any] = {}
+        # The resolved config path is stored once: hot-reload watches this
+        # exact file, so a later PARTNER_CONFIG env change cannot redirect
+        # a running process at a different config.
+        self._config_path = config_path()
+        self._config_mtime_ns = self._stat_config_mtime_ns()
         try:
             self._config = load_partner_config(partner_id)
         except PartnerError as e:
@@ -43,6 +53,71 @@ class PartnerMCPServer:
         values = self._config.secrets() if self._config else []
         backend_secrets = getattr(self._backend, "secrets", []) if self._backend else []
         return values + [str(x) for x in backend_secrets if x]
+
+    def _log_event(self, record: dict[str, Any]) -> None:
+        """Emit one sanitized JSON event line to stderr; logging never fails a call."""
+        try:
+            line = sanitize(json.dumps(record, ensure_ascii=False, sort_keys=True), self.secrets())
+            print(line, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+    def _stat_config_mtime_ns(self) -> int | None:
+        """mtime_ns of the resolved config path, or None when it cannot be stat-ed."""
+        try:
+            return self._config_path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _warn_config_reload(self, reason: str, error: BaseException | None = None) -> None:
+        """Record and emit a structured warning for a failed config reload."""
+        code = ""
+        if isinstance(error, PartnerError):
+            code = error.code
+        elif error is not None:
+            code = type(error).__name__
+        self._config_reload_error = code or reason
+        self._log_event(
+            {
+                "event": "config_reload",
+                "partner_id": self.partner_id,
+                "config": str(self._config_path),
+                "reason": reason,
+                "error_code": code,
+                "outcome": "error",
+            }
+        )
+
+    def _maybe_reload(self) -> None:
+        """Hot-reload the partner config when the file mtime changed.
+
+        The stored ``PARTNER_CONFIG`` path is stat-ed once per check; a
+        changed ``st_mtime_ns`` re-runs ``load_partner_config`` on that
+        exact path. A successful reload swaps in the new config and drops
+        the cached backend so fresh auth/options take effect immediately;
+        a failed reload keeps the last valid config, records
+        ``_config_reload_error`` and emits one ``config_reload`` warning
+        line to stderr - it never switches the server into an error
+        state. A missing or unreadable file keeps the cached config and
+        warns once per transition (``_config_mtime_ns`` is reset to None
+        so a reappearing file is picked up again).
+        """
+        mtime_ns = self._stat_config_mtime_ns()
+        if mtime_ns == self._config_mtime_ns:
+            return
+        self._config_mtime_ns = mtime_ns
+        if mtime_ns is None:
+            self._warn_config_reload("config file is not readable")
+            return
+        try:
+            cfg = load_partner_config(self.partner_id, self._config_path)
+        except (PartnerError, OSError) as e:
+            self._warn_config_reload("config reload failed; keeping previous config", e)
+            return
+        self._config = cfg
+        self._config_error = None
+        self._config_reload_error = None
+        self._backend = None
 
     def _cfg(self) -> PartnerConfig:
         if self._config_error:
@@ -207,6 +282,7 @@ class PartnerMCPServer:
         ]
 
     def tools(self) -> list[dict[str, Any]]:
+        self._maybe_reload()
         if self._toolset() == "review":
             return self._review_tools()
         common_properties = {
@@ -334,6 +410,7 @@ class PartnerMCPServer:
             "active_skill": active,
             "installed_skills": [s.name for s in skills],
             "auth_configured": cfg.auth_configured(),
+            "config_reload_error": self._config_reload_error,
             "config": str(cfg.config_path),
             "harness": str(cfg.harness_path),
         }
@@ -394,6 +471,9 @@ class PartnerMCPServer:
         cfg = self._cfg()
         backend = self._backend_instance()
         skill = load_skill(cfg, str(args.get("skill") or ""))
+        # Resolved skill name for the per-call request log line; model
+        # fields are filled in by the successful return paths below.
+        self._call_meta["skill"] = skill.name
         system_prompt = compose_system_prompt(cfg, skill)
         generation = dict(cfg.generation)
         generation.update(skill.generation)
@@ -402,17 +482,14 @@ class PartnerMCPServer:
         for model in self._candidate_models(cfg, skill, args):
             try:
                 if not callable(complete_ex):
-                    return (
-                        backend.complete(
-                            messages,
-                            system_prompt=system_prompt,
-                            model=model,
-                            generation=generation,
-                        ),
-                        model,
-                        None,
-                        skill,
+                    text = backend.complete(
+                        messages,
+                        system_prompt=system_prompt,
+                        model=model,
+                        generation=generation,
                     )
+                    self._call_meta.update({"model_requested": model, "model_used": None})
+                    return text, model, None, skill
                 result = complete_ex(
                     messages,
                     system_prompt=system_prompt,
@@ -431,7 +508,9 @@ class PartnerMCPServer:
                 ):
                     raise PartnerError("backend_error", "backend returned an empty response")
                 model_used = getattr(result, "model_used", None)
-                return text, model, model_used if isinstance(model_used, str) else None, skill
+                served = model_used if isinstance(model_used, str) else None
+                self._call_meta.update({"model_requested": model, "model_used": served})
+                return text, model, served, skill
             except PartnerError as e:
                 last_error = e
                 if e.code in ("unauthorized", "invalid_config", "invalid_request"):
@@ -538,6 +617,41 @@ class PartnerMCPServer:
             )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        """Dispatch one tool call: config hot-reload, timing, request log.
+
+        Exactly one ``partner_call`` JSON line goes to stderr per call
+        with the tool name, resolved skill/model metadata when
+        determinable, latency and outcome. Question, context and file
+        contents are never logged; the line is sanitized against
+        ``secrets()`` before writing.
+        """
+        self._maybe_reload()
+        self._call_meta = {}
+        start = time.monotonic()
+        outcome = "ok"
+        try:
+            return self._dispatch(name, arguments)
+        except PartnerError as e:
+            outcome = e.code
+            raise
+        except Exception:
+            outcome = "internal_error"
+            raise
+        finally:
+            self._log_event(
+                {
+                    "event": "partner_call",
+                    "partner_id": self.partner_id,
+                    "tool": name,
+                    "skill": self._call_meta.get("skill"),
+                    "model_requested": self._call_meta.get("model_requested"),
+                    "model_used": self._call_meta.get("model_used"),
+                    "latency_ms": int((time.monotonic() - start) * 1000),
+                    "outcome": outcome,
+                }
+            )
+
+    def _dispatch(self, name: str, arguments: dict[str, Any]) -> str:
         if name == "partner_info":
             return self._partner_info()
         if name == "list_partner_skills":

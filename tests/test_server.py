@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,7 @@ sys.path.insert(0, str(ROOT / "partners"))
 from backends.base import CompletionResult  # noqa: E402
 from core.config import load_skill  # noqa: E402
 from core.errors import PartnerError, sanitize  # noqa: E402
+from core.mcp import handle_message  # noqa: E402
 from core.server import PartnerMCPServer  # noqa: E402
 
 
@@ -49,6 +52,20 @@ class PlainBackend:
 
     def complete(self, messages, *, system_prompt, model, generation):
         self.calls.append(model)
+        return self.text
+
+
+class CrashOnceBackend:
+    """Fake backend that raises an unexpected error once, then recovers."""
+
+    def __init__(self, text="recovered"):
+        self.text = text
+        self.calls = []
+
+    def complete(self, messages, *, system_prompt, model, generation):
+        self.calls.append(model)
+        if len(self.calls) == 1:
+            raise RuntimeError("backend exploded")
         return self.text
 
 
@@ -402,6 +419,231 @@ class ServerTest(unittest.TestCase):
             server.call_tool("ask_code_partner_dialog", args)
         for sent in server._backend.sent_messages:
             self.assertEqual(sent, [{"role": "user", "content": "hi"}])
+
+
+def _temp_config(path: Path, partner_id: str = "gh-copilot-partner", **overrides) -> None:
+    """Write a minimal valid one-partner config file for reload tests."""
+    section = {
+        "enabled": True,
+        "toolset": "code",
+        "backend": "openai-compatible",
+        "harness": "harness/gh-copilot-partner.txt",
+        "default_skill": "software-architect",
+        "auth": {},
+        "model": "model-a",
+    }
+    section.update(overrides)
+    path.write_text(json.dumps({"partners": {partner_id: section}}), encoding="utf-8")
+
+
+def _bump_mtime(path: Path, ns: int = 1_000_000_000) -> None:
+    """Push the file mtime forward so the reload check sees a change."""
+    new = path.stat().st_mtime_ns + ns
+    os.utime(path, ns=(new, new))
+
+
+def _json_records(stream: io.StringIO) -> list[dict]:
+    records = []
+    for line in stream.getvalue().splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+class ConfigReloadTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "config.json"
+        _temp_config(self.path, model="model-a")
+        self.env = patch.dict(os.environ, {"PARTNER_CONFIG": str(self.path)}, clear=True)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_reload_picks_up_changed_model_and_clears_backend(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend()
+        _temp_config(self.path, model="model-b")
+        _bump_mtime(self.path)
+        info = json.loads(server.call_tool("partner_info", {}))
+        self.assertEqual(info["model"], "model-b")
+        self.assertIsNone(server._backend)
+        self.assertIsNone(info["config_reload_error"])
+
+    def test_reload_reflects_in_tools_dispatch(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        _temp_config(self.path, toolset="product")
+        _bump_mtime(self.path)
+        names = {tool["name"] for tool in server.tools()}
+        self.assertIn("ask_product_partner", names)
+        self.assertNotIn("ask_code_partner", names)
+
+    def test_invalid_reload_keeps_previous_config_and_warns(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        self.path.write_text("{not json", encoding="utf-8")
+        _bump_mtime(self.path)
+        stderr = io.StringIO()
+        with patch.object(sys, "stderr", stderr):
+            info = json.loads(server.call_tool("partner_info", {}))
+        self.assertEqual(info["model"], "model-a")
+        self.assertEqual(info["config_reload_error"], "invalid_config")
+        warnings = [r for r in _json_records(stderr) if r.get("event") == "config_reload"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["outcome"], "error")
+        self.assertEqual(warnings[0]["error_code"], "invalid_config")
+
+    def test_failed_reload_warns_once_until_mtime_changes(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        self.path.write_text("{not json", encoding="utf-8")
+        _bump_mtime(self.path)
+        stderr = io.StringIO()
+        with patch.object(sys, "stderr", stderr):
+            for _ in range(2):
+                server.call_tool("partner_info", {})
+        warnings = [r for r in _json_records(stderr) if r.get("event") == "config_reload"]
+        self.assertEqual(len(warnings), 1)
+
+    def test_missing_config_file_keeps_previous_config_and_warns_once(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        self.path.unlink()
+        stderr = io.StringIO()
+        with patch.object(sys, "stderr", stderr):
+            info = json.loads(server.call_tool("partner_info", {}))
+            server.call_tool("partner_info", {})
+        self.assertEqual(info["model"], "model-a")
+        warnings = [r for r in _json_records(stderr) if r.get("event") == "config_reload"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["outcome"], "error")
+
+    def test_config_reappearing_after_delete_recovers(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        self.path.unlink()
+        with patch.object(sys, "stderr", io.StringIO()):
+            server.call_tool("partner_info", {})
+        _temp_config(self.path, model="model-c")
+        _bump_mtime(self.path)
+        info = json.loads(server.call_tool("partner_info", {}))
+        self.assertEqual(info["model"], "model-c")
+        self.assertIsNone(info["config_reload_error"])
+
+    def test_initially_broken_config_recovers_on_reload(self):
+        self.path.write_text("{not json", encoding="utf-8")
+        server = PartnerMCPServer("gh-copilot-partner")
+        self.assertIsNotNone(server._config_error)
+        _temp_config(self.path, model="model-d")
+        _bump_mtime(self.path)
+        info = json.loads(server.call_tool("partner_info", {}))
+        self.assertEqual(info["model"], "model-d")
+        self.assertIsNone(server._config_error)
+
+
+class RequestLogTest(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(
+            os.environ,
+            {"PARTNER_CONFIG": str(ROOT / "partners" / "config.example.json")},
+            clear=True,
+        )
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _call_logged(self, server, name, arguments):
+        stderr = io.StringIO()
+        result = None
+        error = None
+        with patch.object(sys, "stderr", stderr):
+            try:
+                result = server.call_tool(name, arguments)
+            except Exception as e:
+                error = e
+        records = [r for r in _json_records(stderr) if r.get("event") == "partner_call"]
+        return result, error, records, stderr.getvalue()
+
+    def test_partner_call_log_fields_for_ok_outcome(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="answer text", model_used="served-model")
+        result, error, records, raw = self._call_logged(
+            server, "ask_partner", {"question": "top secret question body"}
+        )
+        self.assertIsNone(error)
+        self.assertEqual(result, "answer text")
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["partner_id"], "gh-copilot-partner")
+        self.assertEqual(record["tool"], "ask_partner")
+        self.assertEqual(record["skill"], "software-architect")
+        self.assertEqual(record["model_requested"], "claude-sonnet-5")
+        self.assertEqual(record["model_used"], "served-model")
+        self.assertIsInstance(record["latency_ms"], int)
+        self.assertEqual(record["outcome"], "ok")
+        self.assertNotIn("top secret question body", raw)
+
+    def test_partner_call_log_records_partner_error_code(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend()
+        _, error, records, _ = self._call_logged(server, "ask_partner", {})
+        self.assertIsInstance(error, PartnerError)
+        self.assertEqual(error.code, "invalid_request")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "invalid_request")
+        self.assertIsNone(records[0]["skill"])
+        self.assertIsNone(records[0]["model_requested"])
+
+    def test_partner_call_log_records_internal_error_outcome(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = CrashOnceBackend()
+        _, error, records, _ = self._call_logged(server, "ask_partner", {"question": "q?"})
+        self.assertIsInstance(error, RuntimeError)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "internal_error")
+        self.assertEqual(records[0]["skill"], "software-architect")
+
+    def test_log_line_is_sanitized_against_config_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            _temp_config(
+                path,
+                auth={"api_key": "tok-live-secret-999"},
+                model="model-tok-live-secret-999-x",
+            )
+            with patch.dict(os.environ, {"PARTNER_CONFIG": str(path)}, clear=True):
+                server = PartnerMCPServer("gh-copilot-partner")
+                server._backend = ExBackend()
+                _, error, records, raw = self._call_logged(
+                    server, "ask_partner", {"question": "q?"}
+                )
+        self.assertIsNone(error)
+        self.assertEqual(len(records), 1)
+        self.assertNotIn("tok-live-secret-999", raw)
+        self.assertIn("[redacted]", raw)
+
+    def test_crashing_backend_returns_is_error_and_recovers_next_call(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = CrashOnceBackend()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        message = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "ask_partner", "arguments": {"question": "q?"}},
+        }
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            handle_message(server, dict(message, id="first"))
+            handle_message(server, dict(message, id="second"))
+        responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertTrue(responses[0]["result"]["isError"])
+        self.assertIn("internal_error", responses[0]["result"]["content"][0]["text"])
+        self.assertNotIn("backend exploded", stdout.getvalue())
+        self.assertNotIn("isError", responses[1]["result"])
+        self.assertEqual(responses[1]["result"]["content"][0]["text"], "recovered")
+        records = [r for r in _json_records(stderr) if r.get("event") == "partner_call"]
+        self.assertEqual([r["outcome"] for r in records], ["internal_error", "ok"])
 
 
 if __name__ == "__main__":

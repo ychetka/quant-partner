@@ -225,6 +225,17 @@ Tool errors are returned as text in the MCP result:
 
 Secrets are not returned in tool errors. Session tokens are kept in memory and refreshed before expiry.
 
+## Process lifecycle and resilience
+
+Each partner is a separate `partners/mcp_partner.py` process selected by `PARTNER_ID`. The stdio loop is serialized: requests are handled one at a time in stdin order, so a slow provider call head-of-line-blocks only its own partner process - never other partners. There is no internal concurrency to tune; parallelism comes from running one process per partner.
+
+- Per-call error boundary: every `tools/call` is isolated. A `PartnerError` becomes an `isError` tool result with a sanitized message; an unexpected backend exception becomes a generic `internal_error` result that never echoes exception text. Either way the process keeps serving later calls normally.
+- Structured request log: each `tools/call` appends one JSON line to stderr with `event: "partner_call"`, `partner_id`, `tool`, `skill`, `model_requested`, `model_used`, `latency_ms` and `outcome` (`ok`, a `PartnerError` code or `internal_error`). Question, context, file and diff contents are never logged, and the serialized line is sanitized against the configured secrets before writing.
+- Config hot-reload: before each call the server stats the `PARTNER_CONFIG` file resolved at startup and reloads it when `mtime_ns` changed. A successful reload swaps in the new config and drops the cached backend so new auth and options take effect immediately. A failed reload (invalid JSON, unreadable or deleted file) keeps the last valid config and emits a `config_reload` warning line to stderr once per change; `partner_info` reports the failure as `config_reload_error`. A config that reappears or is fixed is picked up on the next call.
+- Timeouts and retries: each backend passes `timeout_seconds` (default 240) to its HTTP calls; a timeout surfaces as `partner_unreachable`. The server performs no automatic retry - advisory calls are idempotent and safe to retry by the caller.
+- Recovery: killing the process remains a supported recovery path. The MCP client respawns it on the next call, the config is re-read at startup and the backend is rebuilt lazily.
+- Placeholder detection: an auth value is ignored as a secret when it is empty, contains a placeholder marker (`REPLACE`, `TOKEN_HERE`, `KEY_HERE`, `YOUR_`, `EXAMPLE`) or is a bare env-var-style name such as `GITHUB_TOKEN` (uppercase letters, digits, `_`/`-` only, length >= 6). `auth_configured` in `partner_info` therefore distinguishes "real credential present" from "placeholder left in the file".
+
 ## Development
 
 Requirements: Python 3.11+ and no mandatory third-party dependencies.
