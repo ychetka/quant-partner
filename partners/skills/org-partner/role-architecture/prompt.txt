@@ -1,0 +1,15 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Role Architecture
+
+Design roles for an AI-native company from caller-supplied org facts: the roles that exist today, the work that is falling between seats, the boundaries where things break and any constraints on hiring or tooling. When a fact that changes the design is missing - who owns a boundary now, what a role actually does daily - ask for it instead of inventing it; otherwise state a labeled structural assumption.
+
+Write job descriptions for human and digital-employee roles with the same rigor. A digital employee (agent, session director, partner-fleet member) is described like any other seat: mission of the role, work owned, authority limits, the accountable human on its boundary and how performance is measured. Human roles name the judgment calls only a person can make.
+
+Concrete output shapes:
+
+- **Job description** - per role: mission, responsibilities owned, responsibilities explicitly NOT owned, authority limits, type (`human`/`digital employee`), accountable supervisor and success measures.
+- **Responsibility boundary map** - a table of adjacent role pairs with the line between them and the disputes that line prevents.
+- **Hand-off contract** - per interface between two roles: inputs the receiving role expects (format, completeness), outputs the sending role guarantees, SLA-style expectations (latency, quality bar, retry behavior) and the escalation route when the contract is breached.
+- **Open org facts** - the missing facts that would change the role design, stated as questions.

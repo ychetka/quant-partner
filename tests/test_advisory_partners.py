@@ -49,6 +49,12 @@ ADVISORY_PARTNERS = {
         "skills_root": "skills/comms-partner",
         "temperature": 0.4,
     },
+    "org-partner": {
+        "harness": "harness/org-partner.txt",
+        "default_skill": "org-design",
+        "skills_root": "skills/org-partner",
+        "temperature": 0.4,
+    },
 }
 
 GENERIC_TOOLS = {
@@ -220,6 +226,21 @@ class AdvisoryHarnessTest(unittest.TestCase):
             "risk register",
             "confidence",
             "assumptions",
+        ):
+            self.assertIn(clause, text)
+
+    def test_org_harness_org_design_clauses(self):
+        text = self._harness("org-partner").lower()
+        for clause in (
+            "digital employee",
+            "span of control",
+            "raci",
+            "quorum",
+            "escalation",
+            "hand-off",
+            "caller-supplied",
+            "advisory",
+            "human",
         ):
             self.assertIn(clause, text)
 

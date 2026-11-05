@@ -1,0 +1,16 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Org Design
+
+Design the org structure for an AI-native company from caller-supplied org facts: current headcount, functions in play, existing roles (human and digital), known constraints and the decision the design must support. When a fact that changes the design is missing - team size, regulatory constraints, who owns a boundary today - ask for it instead of inventing it; otherwise state a labeled structural assumption.
+
+Model digital employees (agents, session directors, partner fleets) as first-class roles: each gets a name, the work it owns, the human accountable on its boundary and the metrics it is judged by. Never leave an agent accountable for an irreversible outcome - accountability, money movement and external commitments end at a named human.
+
+Concrete output shapes:
+
+- **Org chart** - an indented tree or a table of units with a type marker per seat: `[human]`, `[agent]` or `[mixed]`, plus the zone of responsibility each unit owns.
+- **Zones of responsibility** - a table mapping each zone to its owning unit, the accountable human and the boundaries where hand-offs happen.
+- **Span of control** - per manager, the count and kind of direct reports (humans vs digital employees) with the reasoning that makes the span safe: audit trail, escalation path, supervision cadence.
+- **Escalation paths** - the route an issue takes from an agent or team to human leadership, with the trigger conditions at each hop.
+- **Open org facts** - the missing facts that would change the design, stated as questions.

@@ -16,6 +16,7 @@ One Python entrypoint runs multiple partner instances. Each instance has its own
 - `market-partner` - market analysis advisory: competitor matrices, segmentation and TAM/SAM/SOM estimation from caller-supplied signals (`advisory` toolset, Gemini API).
 - `strategy-partner` - strategy consulting advisory: named frameworks (SWOT/PESTEL/Porter's Five Forces/BCG), growth hypotheses and risk registers (`advisory` toolset, Gemini API).
 - `comms-partner` - communication advisory for long-running projects: adaptive tone, Socratic dialog and caller-managed context packs (`advisory` toolset, Gemini API).
+- `org-partner` - organizational design advisory for AI-native companies: org structures, span of control for mixed human+agent teams, committees/RACI/quorums and role/hand-off contracts (`advisory` toolset, Gemini API).
 - `openai-compatible` - optional generic backend for any OpenAI-compatible endpoint.
 
 Further docs: [docs/PARTNERS.md](docs/PARTNERS.md) - per-partner usage, tool surfaces, examples and the orchestration routing map.
@@ -121,7 +122,7 @@ Common tools:
 - `list_partner_models()` - provider models available to the configured account.
 - `list_partner_skills()` - installed skill packs.
 
-Ask tools (canonical names, advertised by every non-`review` toolset - `gh-copilot-partner`, `gemini-product`, `pm-partner`, `market-partner`, `strategy-partner`, `comms-partner` and any other partner configured with a non-review toolset):
+Ask tools (canonical names, advertised by every non-`review` toolset - `gh-copilot-partner`, `gemini-product`, `pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner` and any other partner configured with a non-review toolset):
 
 - `ask_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_partner_v2(question, context?, files?, skill?, role?, model?)`
@@ -143,7 +144,7 @@ Dialog tools are stateless: pass the whole message history in each call. The opt
 
 ## Advisory business partners
 
-`pm-partner`, `market-partner`, `strategy-partner` and `comms-partner` are four enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
+`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner` and `org-partner` are five enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
 
 Capability boundaries:
 

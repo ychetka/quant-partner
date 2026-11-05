@@ -21,7 +21,7 @@ The tool surface depends on the partner's configured `toolset`:
 - Ask tools (all non-review toolsets, canonical names): `ask_partner(question, context?, files?, skill?, role?, model?)`, `ask_partner_v2(...)`, `ask_partner_dialog(messages, context?, skill?, role?, model?)`.
 - `code` toolset (`gh-copilot-partner`, `local-openai-partner`): the canonical `ask_partner*` tools plus the legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` with the same signatures.
 - `product` toolset (`gemini-product`): the canonical `ask_partner*` tools plus the legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` with the same signatures.
-- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases.
+- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases.
 - `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
 
 The `*_v2` ask variants take the same arguments and return a JSON object `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}` instead of bare text, exposing model provenance.
@@ -240,6 +240,36 @@ Context-pack protocol: the server is stateless and keeps no memory between calls
 
 Boundary notes: drafts are honest and verifiable - no inflated claims, no invented metrics, no promises the brief does not support. Treat the brief as sensitive: it leaves the caller's machine to the configured provider.
 
+## org-partner
+
+Organizational design advisory for AI-native companies through the Gemini API. COO/business-architect persona: designs org structures, responsibility zones and span of control for companies built around AI digital employees (agents, session directors, partner fleets) with humans placed deliberately on the critical boundaries.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `org-design`.
+- Skills root: `skills/org-partner`.
+
+| Skill | When to use |
+| --- | --- |
+| `org-design` | Use for org structures and org charts, zones of responsibility, span-of-control design for mixed human+agent teams, agents-as-roles modeling, critical-boundary placement of humans and escalation paths. |
+| `operating-model` | Use for committee, board and council design, decision rituals and cadences, RACI matrices, gates and quorums, incident channels and escalation to the CEO. |
+| `role-architecture` | Use for job descriptions for human and AI digital-employee roles, responsibility boundaries and hand-off contracts between roles with inputs, outputs and SLA-style expectations. |
+
+Call it when:
+
+- You need an org structure for a company mixing humans and AI digital employees: org chart, zones of responsibility, span of control.
+- You want committees, boards or councils designed with mandate, cadence, quorum, RACI and gates.
+- You need an incident channel with a severity ladder and escalation to the CEO.
+- You need job descriptions for human and digital-employee roles with explicit responsibility boundaries.
+- You want hand-off contracts between roles: inputs, outputs and SLA-style expectations.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Design an org structure for a 3-human, 12-agent company and place humans on the critical boundaries.", "context": "Caller-supplied facts: humans cover CEO, sales lead and ops lead; the agent fleet runs support, research and drafting; external commitments and payouts must stay human-owned.", "skill": "org-design"}}}
+```
+
+Boundary notes: works only on caller-supplied org facts and constraints - no live benchmarks, no industry databases and no proprietary org data. Designs are advisory drafts; legal, labor, tax and HR implications need qualified human validation before adoption.
+
 ## local-openai-partner
 
 Disabled-by-default partner that talks to any OpenAI-compatible HTTP endpoint through the `openai-compatible` backend - self-hosted models, local proxies or corporate gateways. It shares the `gh-copilot-partner` harness contract and skill packs, so it answers the same engineering persona once pointed at an endpoint.
@@ -293,13 +323,16 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | Investor update / stakeholder communication | `comms-partner` | `communication` | `ask_partner` | Pass the context pack in `context` |
 | Founder coaching / elicitation | `comms-partner` | `communication` | `ask_partner_dialog` | Socratic: one focused question at a time |
 | Long-term project memory | `comms-partner` | `communication` | `ask_partner` / `ask_partner_dialog` | Caller-managed context pack every call |
+| Org structure / span of control | `org-partner` | `org-design` | `ask_partner` | Mixed human+agent orgs; humans on critical boundaries |
+| Committee / RACI / quorum design | `org-partner` | `operating-model` | `ask_partner` | Decision rituals, gates and incident escalation to the CEO |
+| Role descriptions / hand-off contracts | `org-partner` | `role-architecture` | `ask_partner` | Human and digital-employee JDs; inputs/outputs/SLA |
 | Video / meeting Q&A | `media-partner` | `media-analysis` | `ask_partner` | Planned (issue #37); transcript via `context` after `tools/media_ingest.py` |
 | Self-hosted / OpenAI-compatible endpoint | `local-openai-partner` | `software-architect` | `ask_partner` | Disabled by default; enable only for endpoints you control |
 
 Decision rules:
 
 - A unified diff in hand and a strict, automation-consumable artifact - use the `review` toolset on `code-reviewer`; for a conversational read of a patch, `gh-copilot-partner` with the `code-reviewer` skill instead.
-- A business question - pick the specialist by domain: `pm-partner` for product economics, `market-partner` for market synthesis, `strategy-partner` for frameworks and risk, `gemini-product` for UX, release and spec-drift work.
+- A business question - pick the specialist by domain: `pm-partner` for product economics, `market-partner` for market synthesis, `strategy-partner` for frameworks and risk, `org-partner` for org structure, decision systems and role contracts, `gemini-product` for UX, release and spec-drift work.
 - A conversation, a draft or anything that needs the venture brief - `comms-partner` with the context pack in `context`.
 - An engineering question - `gh-copilot-partner` (or `local-openai-partner` when a self-hosted endpoint is configured).
 - When partners overlap - for example `pm-partner` versus `gemini-product` on MVP scope - prefer `pm-partner` for economics-heavy B2B framing and `gemini-product` for UX, release-note and spec-compliance work.

@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "org-design",
+  "description": "Organizational design for AI-native companies: org structures, responsibility zones and span of control for mixed human+AI workforces.",
+  "when_to_use": "Use for org structures and org charts, zones of responsibility, span-of-control design for mixed human+agent teams, agents-as-roles modeling, critical-boundary placement of humans and escalation paths.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}
