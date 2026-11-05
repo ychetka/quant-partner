@@ -146,7 +146,7 @@ The `*_v2` ask tools accept the same arguments as the base ask tools but return 
 - `list_reviewer_models()`
 - `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)`
 
-Dialog tools are stateless: pass the whole message history in each call. The optional `context` argument carries a caller-supplied context/context-pack brief and is prepended to the first message as a `## Context` section.
+Dialog tools are stateless: pass the whole message history in each call. The optional `context` argument carries a caller-supplied context/context-pack brief and is sent as a leading user turn with a `## Context` section, inserted before the message history.
 
 ## Advisory business partners
 

@@ -225,7 +225,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(properties["context"]["type"], "string")
         self.assertEqual(tools["ask_code_partner_dialog"]["inputSchema"]["required"], ["messages"])
 
-    def test_dialog_context_prepended_to_first_message(self):
+    def test_dialog_context_added_as_leading_user_turn(self):
         server = PartnerMCPServer("gh-copilot-partner")
         server._backend = ExBackend(text="answer")
         server.call_tool(
@@ -240,8 +240,42 @@ class ServerTest(unittest.TestCase):
             },
         )
         sent = server._backend.sent_messages[0]
-        self.assertEqual(sent[0]["content"], "## Context\nventure brief\n\nfirst")
-        self.assertEqual(sent[0]["role"], "user")
+        self.assertEqual(
+            sent[0],
+            {"role": "user", "content": "## Context\nventure brief"},
+        )
+        self.assertEqual(
+            sent[1:],
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "earlier answer"},
+                {"role": "user", "content": "follow-up"},
+            ],
+        )
+
+    def test_dialog_context_keeps_assistant_first_history_intact(self):
+        """Regression: an assistant-first history must not absorb the brief.
+
+        The context lands in its own leading user turn; the original
+        assistant message keeps its role and verbatim content.
+        """
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="answer")
+        server.call_tool(
+            "ask_code_partner_dialog",
+            {
+                "messages": [
+                    {"role": "assistant", "text": "earlier answer"},
+                    {"role": "user", "text": "follow-up"},
+                ],
+                "context": "venture brief",
+            },
+        )
+        sent = server._backend.sent_messages[0]
+        self.assertEqual(
+            sent[0],
+            {"role": "user", "content": "## Context\nventure brief"},
+        )
         self.assertEqual(
             sent[1:],
             [
