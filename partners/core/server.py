@@ -266,7 +266,8 @@ class PartnerMCPServer:
                         },
                         "context": self._string_arg(
                             "Optional caller-supplied context/context-pack brief; "
-                            "prepended to the first message as a Context section"
+                            "added as a leading user context turn before the "
+                            "message history"
                         ),
                         **common_properties,
                     },
@@ -446,7 +447,7 @@ class PartnerMCPServer:
             messages.append({"role": "assistant" if role == "model" else role, "content": text})
         context = str(args.get("context") or "")
         if context:
-            messages[0]["content"] = "## Context\n" + context + "\n\n" + messages[0]["content"]
+            messages.insert(0, {"role": "user", "content": "## Context\n" + context})
         return self._complete(messages, args)
 
     def _review_service(self) -> ReviewService:

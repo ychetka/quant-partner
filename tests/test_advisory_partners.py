@@ -214,23 +214,78 @@ class AdvisoryHarnessTest(unittest.TestCase):
                 self.assertNotIn("SPDX-License-Identifier", prompt)
 
 
+REVIEW_ONLY_TOOLS = ("review_code", "list_reviewer_models")
+
+ASK_TOOL_NAMES = (
+    "ask_partner",
+    "ask_partner_v2",
+    "ask_partner_dialog",
+    "ask_code_partner",
+    "ask_code_partner_v2",
+    "ask_code_partner_dialog",
+    "ask_product_partner",
+    "ask_product_partner_v2",
+    "ask_product_partner_dialog",
+)
+
+
 class PartnersDocTest(unittest.TestCase):
     """docs/PARTNERS.md must cover every configured partner and installed skill."""
 
     def _doc_text(self):
         return PARTNERS_DOC.read_text(encoding="utf-8")
 
+    def _doc_sections(self):
+        """Map each ``## <title>`` heading of PARTNERS.md to its body text."""
+        sections = {}
+        title = None
+        for line in self._doc_text().splitlines():
+            if line.startswith("## "):
+                title = line[3:].strip()
+                sections[title] = []
+            elif title is not None:
+                sections[title].append(line)
+        return {name: "\n".join(lines) for name, lines in sections.items()}
+
+    def _partner_section(self, sections, partner_id):
+        """Body of the partner's own section; '' when the doc has none."""
+        for title, body in sections.items():
+            if title.split("(")[0].strip() == partner_id:
+                return body
+        return ""
+
     def _configured_partners(self):
         data = json.loads(CONFIG_EXAMPLE.read_text(encoding="utf-8"))
         return data["partners"]
 
-    def _skill_manifests(self, partner_id, raw):
+    def _skill_names(self, partner_id, raw):
+        """Installed skill dir names, resolved like core.config._skills_root.
+
+        Returns None when the resolved skills root does not exist at all.
+        """
         skills_root = raw.get("skills_root") or f"skills/{partner_id}"
         root = ROOT / "partners" / skills_root
-        for directory in sorted(p for p in root.iterdir() if p.is_dir()):
-            manifest_path = directory / "manifest.json"
-            if manifest_path.exists():
-                yield json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not root.is_dir():
+            return None
+        return [
+            directory.name
+            for directory in sorted(p for p in root.iterdir() if p.is_dir())
+            if (directory / "manifest.json").exists()
+        ]
+
+    def _assert_not_advertised(self, section, tool_name):
+        """Every mention of tool_name must be a negation, never an offer."""
+        start = 0
+        while True:
+            idx = section.find(tool_name, start)
+            if idx == -1:
+                return
+            window = section[max(0, idx - 40) : idx].lower()
+            self.assertTrue(
+                "no " in window or "not " in window,
+                f"{tool_name} appears advertised, not negated, in section:\n{section}",
+            )
+            start = idx + len(tool_name)
 
     def test_every_configured_partner_id_is_documented(self):
         text = self._doc_text()
@@ -239,13 +294,60 @@ class PartnersDocTest(unittest.TestCase):
                 self.assertIn(partner_id, text)
 
     def test_every_installed_skill_name_is_documented(self):
-        text = self._doc_text()
+        sections = self._doc_sections()
         for partner_id, raw in self._configured_partners().items():
-            for manifest in self._skill_manifests(partner_id, raw):
-                name = str(manifest.get("name", ""))
+            section = self._partner_section(sections, partner_id)
+            with self.subTest(partner=partner_id):
+                self.assertTrue(
+                    section,
+                    f"missing PARTNERS.md '## {partner_id}' section",
+                )
+            names = self._skill_names(partner_id, raw)
+            if not names:
+                # No resolved skill dirs: the doc must still name the
+                # partner and its configured default_skill explicitly.
+                with self.subTest(partner=partner_id, skill="<none>"):
+                    default_skill = str(raw.get("default_skill") or "")
+                    self.assertTrue(default_skill)
+                    self.assertIn(f"`{default_skill}`", section)
+                continue
+            for name in names:
                 with self.subTest(partner=partner_id, skill=name):
-                    self.assertTrue(name)
-                    self.assertIn(name, text)
+                    # Backticked inside the partner's own section so the
+                    # code-reviewer *skill* cannot be satisfied by the
+                    # code-reviewer *partner id* elsewhere in the doc.
+                    self.assertIn(f"`{name}`", section)
+
+    def test_documented_tools_match_configured_toolset(self):
+        sections = self._doc_sections()
+        # Common tools are documented once under "How to call a partner",
+        # not repeated inside every partner section.
+        shared = sections.get("How to call a partner", "")
+        env = patch.dict(
+            os.environ,
+            {"PARTNER_CONFIG": str(CONFIG_EXAMPLE)},
+            clear=True,
+        )
+        with env:
+            for partner_id, raw in self._configured_partners().items():
+                if not raw.get("enabled", True):
+                    continue
+                section = self._partner_section(sections, partner_id)
+                documented = section + "\n" + shared
+                names = {tool["name"] for tool in PartnerMCPServer(partner_id).tools()}
+                for name in sorted(names):
+                    with self.subTest(partner=partner_id, tool=name):
+                        self.assertIn(name, documented)
+                if raw.get("toolset") == "review":
+                    for name in ASK_TOOL_NAMES:
+                        with self.subTest(partner=partner_id, forbidden=name):
+                            self.assertNotIn(name, section)
+                    with self.subTest(partner=partner_id, forbidden="list_partner_models"):
+                        self._assert_not_advertised(section, "list_partner_models")
+                else:
+                    for name in REVIEW_ONLY_TOOLS:
+                        with self.subTest(partner=partner_id, forbidden=name):
+                            self.assertNotIn(name, section)
 
 
 if __name__ == "__main__":
