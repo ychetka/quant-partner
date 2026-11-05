@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "product-manager",
+  "description": "B2B product synthesis: Value Proposition Canvas, MVP cut, backlog prioritization and unit economics.",
+  "when_to_use": "Use for product requirements, feature evaluation, MVP scope, RICE/ICE/MoSCoW prioritization and LTV/CAC/payback/churn/ROI reasoning.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

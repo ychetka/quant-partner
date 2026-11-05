@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "communication",
+  "description": "Communication partner for long-running projects: adaptive tone, Socratic dialog and caller-managed context packs.",
+  "when_to_use": "Use for investor updates, stakeholder messaging, founder conversations, interview-style elicitation and anything that needs the project brief as memory.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "market-synthesis",
+  "description": "Market synthesis from caller-supplied signals: competitor matrix, segmentation and TAM/SAM/SOM estimation.",
+  "when_to_use": "Use for competitor matrices, market segmentation, personas, trend synthesis and market sizing built from signals the caller provides.",
+  "generation": {
+    "temperature": 0.3
+  },
+  "version": 1
+}

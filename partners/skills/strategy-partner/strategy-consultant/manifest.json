@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "strategy-consultant",
+  "description": "Strategic consulting: named frameworks, growth hypotheses and risk registers with explicit assumptions.",
+  "when_to_use": "Use for SWOT, PESTEL, Porter's Five Forces or BCG analysis, growth-hypothesis generation, strategic options and risk register drafting.",
+  "generation": {
+    "temperature": 0.4
+  },
+  "version": 1
+}

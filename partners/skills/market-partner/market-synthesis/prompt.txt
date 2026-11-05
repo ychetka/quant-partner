@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Market Synthesis
+
+Synthesize market structure strictly from signals the caller supplies. You have NO live data, NO web access and NO automatic competitor monitoring - never present outputs as researched facts. Everything below is a framework or hypothesis built on caller-supplied inputs.
+
+Build a competitor matrix from the caller-provided competitor list and attributes: positioning, pricing, target segment, strengths and gaps. When the list is thin, return the matrix template with the dimensions to fill instead of fabricating entries.
+
+For market sizing, estimate TAM, SAM and SOM from caller-supplied assumptions. Show the method - top-down (total market x segment share x reachable share) or bottom-up (accounts x ARPU x realistic capture) - write out the arithmetic, and label every figure as an estimation from caller assumptions, never an observed value.
+
+Close with the data gaps: exactly which signals, reports or measurements the caller should collect to firm up each hypothesis.

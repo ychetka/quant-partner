@@ -264,6 +264,10 @@ class PartnerMCPServer:
                                 "required": ["role", "text"],
                             },
                         },
+                        "context": self._string_arg(
+                            "Optional caller-supplied context/context-pack brief; "
+                            "prepended to the first message as a Context section"
+                        ),
                         **common_properties,
                     },
                     "required": ["messages"],
@@ -440,6 +444,9 @@ class PartnerMCPServer:
                     "invalid_request", "messages require role user|assistant|model and text"
                 )
             messages.append({"role": "assistant" if role == "model" else role, "content": text})
+        context = str(args.get("context") or "")
+        if context:
+            messages[0]["content"] = "## Context\n" + context + "\n\n" + messages[0]["content"]
         return self._complete(messages, args)
 
     def _review_service(self) -> ReviewService:

@@ -24,12 +24,14 @@ class ExBackend:
         self.text = text
         self.model_used = model_used
         self.calls = []
+        self.sent_messages = []
 
     def list_models(self, refresh=False):
         return []
 
     def complete_ex(self, messages, *, system_prompt, model, generation):
         self.calls.append(model)
+        self.sent_messages.append(messages)
         return CompletionResult(text=self.text, model_used=self.model_used)
 
     def complete(self, messages, *, system_prompt, model, generation):
@@ -52,8 +54,12 @@ class PlainBackend:
 
 class ServerTest(unittest.TestCase):
     def setUp(self):
+        # clear=True keeps stray QP_AUTH_*/QP_MODEL_* overrides from the
+        # ambient environment out of auth_configured assertions.
         self.env = patch.dict(
-            os.environ, {"PARTNER_CONFIG": str(ROOT / "partners" / "config.example.json")}
+            os.environ,
+            {"PARTNER_CONFIG": str(ROOT / "partners" / "config.example.json")},
+            clear=True,
         )
         self.env.start()
 
@@ -204,6 +210,56 @@ class ServerTest(unittest.TestCase):
             ),
             "plain text answer",
         )
+        self.assertEqual(
+            server._backend.sent_messages[1],
+            [{"role": "user", "content": "hi"}],
+        )
+
+    # -- dialog context ----------------------------------------------------------
+
+    def test_dialog_tool_schema_exposes_context(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        tools = {tool["name"]: tool for tool in server.tools()}
+        properties = tools["ask_code_partner_dialog"]["inputSchema"]["properties"]
+        self.assertIn("context", properties)
+        self.assertEqual(properties["context"]["type"], "string")
+        self.assertEqual(tools["ask_code_partner_dialog"]["inputSchema"]["required"], ["messages"])
+
+    def test_dialog_context_prepended_to_first_message(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="answer")
+        server.call_tool(
+            "ask_code_partner_dialog",
+            {
+                "messages": [
+                    {"role": "user", "text": "first"},
+                    {"role": "assistant", "text": "earlier answer"},
+                    {"role": "user", "text": "follow-up"},
+                ],
+                "context": "venture brief",
+            },
+        )
+        sent = server._backend.sent_messages[0]
+        self.assertEqual(sent[0]["content"], "## Context\nventure brief\n\nfirst")
+        self.assertEqual(sent[0]["role"], "user")
+        self.assertEqual(
+            sent[1:],
+            [
+                {"role": "assistant", "content": "earlier answer"},
+                {"role": "user", "content": "follow-up"},
+            ],
+        )
+
+    def test_dialog_without_context_leaves_messages_unchanged(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        server._backend = ExBackend(text="answer")
+        for args in (
+            {"messages": [{"role": "user", "text": "hi"}]},
+            {"messages": [{"role": "user", "text": "hi"}], "context": ""},
+        ):
+            server.call_tool("ask_code_partner_dialog", args)
+        for sent in server._backend.sent_messages:
+            self.assertEqual(sent, [{"role": "user", "content": "hi"}])
 
 
 if __name__ == "__main__":

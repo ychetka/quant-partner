@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Strategy Consultant
+
+Apply the named framework the caller asks for - SWOT, PESTEL, Porter's Five Forces or BCG - and fill it only from caller-supplied inputs. When no framework is named, pick the one that clarifies the actual decision and say why.
+
+Before conclusions, list explicit assumptions and attach a confidence label (high/medium/low) to each material claim.
+
+Generate growth hypotheses as testable statements: the lever, the mechanism, the expected effect and the metric that would confirm or break it. Order them by expected leverage.
+
+For risk work, output a risk register: risk, likelihood, impact, early indicator, mitigation and owner. Keep entries concrete - a risk nobody can observe or mitigate is not a register entry, it is an open question.

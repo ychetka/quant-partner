@@ -12,6 +12,10 @@ One Python entrypoint runs multiple partner instances. Each instance has its own
 - `gh-copilot-partner` - code, architecture, stack, review and debugging consultations through direct GitHub Copilot API access.
 - `gemini-product` - product management, UX architecture, prioritization, release-note drafting and advisory spec compliance verification through the Gemini API.
 - `code-reviewer` - advisory second-opinion review of unified diffs with strict model provenance.
+- `pm-partner` - B2B product management advisory: Value Proposition Canvas, MVP scoping, backlog prioritization and unit economics (`advisory` toolset, Gemini API).
+- `market-partner` - market analysis advisory: competitor matrices, segmentation and TAM/SAM/SOM estimation from caller-supplied signals (`advisory` toolset, Gemini API).
+- `strategy-partner` - strategy consulting advisory: named frameworks (SWOT/PESTEL/Porter's Five Forces/BCG), growth hypotheses and risk registers (`advisory` toolset, Gemini API).
+- `comms-partner` - communication advisory for long-running projects: adaptive tone, Socratic dialog and caller-managed context packs (`advisory` toolset, Gemini API).
 - `openai-compatible` - optional generic backend for any OpenAI-compatible endpoint.
 
 ## MVP architecture
@@ -39,6 +43,7 @@ partners/
   review/                         advisory review service, artifact schema, cache, provenance
   harness/                        base partner contracts
   skills/<partner>/<skill>/       manifest.json + prompt.txt
+  context-pack/                   caller-managed startup/project brief template
 tools/
   mcp_smoke.py                    local JSON-RPC smoke client
   fake_openai_server.py           deterministic loopback OpenAI-compatible endpoint
@@ -118,13 +123,19 @@ Common tools:
 
 - `ask_code_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_code_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_code_partner_dialog(messages, skill?, role?, model?)`
+- `ask_code_partner_dialog(messages, context?, skill?, role?, model?)`
 
 `gemini-product` tools:
 
 - `ask_product_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_product_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_product_partner_dialog(messages, skill?, role?, model?)`
+- `ask_product_partner_dialog(messages, context?, skill?, role?, model?)`
+
+`advisory` toolset tools (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner` and any other partner configured with `"toolset": "advisory"` or an unknown toolset):
+
+- `ask_partner(question, context?, files?, skill?, role?, model?)`
+- `ask_partner_v2(question, context?, files?, skill?, role?, model?)`
+- `ask_partner_dialog(messages, context?, skill?, role?, model?)`
 
 The `*_v2` ask tools accept the same arguments as the base ask tools but return a structured JSON object instead of bare text: `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}`. `model_requested` is the candidate model that produced the answer, `model_used` is the provider-reported served model (or `null` when the backend reports none), and `model_match` is `true`/`false`/`null` - `null` when `model_used` is absent.
 
@@ -133,7 +144,17 @@ The `*_v2` ask tools accept the same arguments as the base ask tools but return 
 - `list_reviewer_models()`
 - `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)`
 
-Dialog tools are stateless: pass the whole message history in each call.
+Dialog tools are stateless: pass the whole message history in each call. The optional `context` argument carries a caller-supplied context/context-pack brief and is prepended to the first message as a `## Context` section.
+
+## Advisory business partners
+
+`pm-partner`, `market-partner`, `strategy-partner` and `comms-partner` are four enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
+
+Capability boundaries:
+
+- The partners reason offline and statelessly. There is no web access, no live market data, no automatic competitor monitoring and no "Big Data" feed behind any of them: outputs are frameworks and hypotheses synthesized from the signals the caller supplies in `question`, `context` and `files`.
+- Long-term memory is caller-managed. `comms-partner` (and any partner) accepts a startup/project brief in the `context` field of each call and treats it as the memory substitute; the server never stores session state. A fill-in template lives at `partners/context-pack/CONTEXT_PACK.md`.
+- All outputs are advisory only: nothing is published, merged or executed, and estimates such as TAM/SAM/SOM are labeled estimations from caller assumptions, not observed data.
 
 ## Advisory code review
 
