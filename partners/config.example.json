@@ -113,6 +113,114 @@
         "max_tokens": 8192
       },
       "timeout_seconds": 240
+    },
+    "pm-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/pm-partner.txt",
+      "default_skill": "product-manager",
+      "skills_root": "skills/pm-partner",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.4,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    },
+    "market-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/market-partner.txt",
+      "default_skill": "market-synthesis",
+      "skills_root": "skills/market-partner",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.3,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    },
+    "strategy-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/strategy-partner.txt",
+      "default_skill": "strategy-consultant",
+      "skills_root": "skills/strategy-partner",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.4,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    },
+    "comms-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/comms-partner.txt",
+      "default_skill": "communication",
+      "skills_root": "skills/comms-partner",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.4,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
     }
   }
 }
