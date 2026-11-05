@@ -291,15 +291,25 @@ class AdvisoryGroundingContractTest(unittest.TestCase):
                             self.assertEqual(properties[field]["items"], {"type": "string"})
 
     def test_non_advisory_toolsets_do_not_expose_grounding_fields(self):
-        for partner_id in ("gh-copilot-partner", "gemini-product"):
-            with self.subTest(partner=partner_id):
-                for tool in PartnerMCPServer(partner_id).tools():
-                    if not tool["name"].startswith("ask_"):
-                        continue
-                    properties = tool["inputSchema"]["properties"]
-                    for field in GROUNDING_FIELDS:
-                        with self.subTest(partner=partner_id, tool=tool["name"], field=field):
-                            self.assertNotIn(field, properties)
+        partners = json.loads(CONFIG_EXAMPLE.read_text(encoding="utf-8"))["partners"]
+        non_advisory = {
+            partner_id
+            for partner_id, raw in partners.items()
+            if raw.get("enabled", True) and raw.get("toolset") != "advisory"
+        }
+        # The sweep must really cover every enabled non-advisory
+        # partner - one per code, product and review toolset. Disabled
+        # partners cannot be loaded, so they cannot be checked here.
+        self.assertEqual(
+            {"gh-copilot-partner", "gemini-product", "code-reviewer"},
+            non_advisory,
+        )
+        for partner_id in sorted(non_advisory):
+            for tool in PartnerMCPServer(partner_id).tools():
+                properties = tool["inputSchema"]["properties"]
+                for field in GROUNDING_FIELDS:
+                    with self.subTest(partner=partner_id, tool=tool["name"], field=field):
+                        self.assertNotIn(field, properties)
 
     def test_grounded_helper(self):
         grounded = PartnerMCPServer._grounded
@@ -313,6 +323,43 @@ class AdvisoryGroundingContractTest(unittest.TestCase):
             {"context": "ctx"},
             {"context_pack": "brief"},
             {"files": [{"name": "f", "content": "x"}]},
+        ):
+            with self.subTest(args=args):
+                self.assertTrue(grounded(args))
+
+    def test_grounded_helper_blank_renderings_do_not_count(self):
+        # A field counts as grounding only when it would render
+        # grounding content: blank-only items, whitespace scalars and
+        # files entries without content render nothing, so they must
+        # not let a bare question escape the fail-soft instruction.
+        grounded = PartnerMCPServer._grounded
+        for args in (
+            {"options_considered": [" ", ""]},
+            {"options_considered": "  "},
+            {"options_considered": 5},
+            {"constraints": [""]},
+            {"files": []},
+            {"files": [{"name": "f"}]},
+            {"files": [{"name": "f", "content": ""}]},
+            {"files": [{"name": "f", "content": "  "}]},
+            {"files": ["f.txt"]},
+            {"context": "\t \n"},
+            {"context_pack": "  "},
+            {"decision_to_make": 0},
+        ):
+            with self.subTest(args=args):
+                self.assertFalse(grounded(args))
+
+    def test_grounded_helper_non_string_values(self):
+        # The renderer coerces values with str(), so non-string scalars
+        # and items that render a section count as grounded too.
+        grounded = PartnerMCPServer._grounded
+        for args in (
+            {"decision_to_make": 5},
+            {"context_pack": 5},
+            {"context": 5},
+            {"options_considered": [5]},
+            {"files": [{"name": "f", "content": 5}]},
         ):
             with self.subTest(args=args):
                 self.assertTrue(grounded(args))
@@ -383,6 +430,37 @@ class AdvisoryGroundingContractTest(unittest.TestCase):
             with self.subTest(field_args=field_args):
                 content = server._ask_messages({"question": "q?", **field_args})[0]["content"]
                 self.assertNotIn("## Missing grounding", content)
+
+    def test_blank_grounding_fields_keep_ungrounded_instruction(self):
+        # Whitespace-only grounding values render no section, so the
+        # call stays ungrounded and keeps the clarifying-questions
+        # instruction appended.
+        server = PartnerMCPServer("pm-partner")
+        for field_args in (
+            {"context": "  "},
+            {"options_considered": [" ", ""]},
+            {"constraints": [""]},
+            {"files": [{"name": "f"}]},
+            {"files": [{"name": "f", "content": "  "}]},
+        ):
+            with self.subTest(field_args=field_args):
+                content = server._ask_messages({"question": "q?", **field_args})[0]["content"]
+                self.assertIn("## Missing grounding", content)
+                for marker in (
+                    "## Context\n",
+                    "## Options considered",
+                    "## Constraints",
+                    "## File:",
+                ):
+                    self.assertNotIn(marker, content)
+
+    def test_non_string_grounding_scalar_counts_as_grounded(self):
+        # decision_to_make=5 renders a real section, so the call is
+        # grounded: no clarifying-questions instruction is appended.
+        server = PartnerMCPServer("pm-partner")
+        content = server._ask_messages({"question": "q?", "decision_to_make": 5})[0]["content"]
+        self.assertIn("## Decision to make\n5", content)
+        self.assertNotIn("## Missing grounding", content)
 
     def test_non_advisory_ask_ignores_grounding_fields(self):
         server = PartnerMCPServer("gh-copilot-partner")

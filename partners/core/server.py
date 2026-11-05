@@ -528,6 +528,44 @@ class PartnerMCPServer:
         return "\n".join(lines)
 
     @staticmethod
+    def _grounding_text(value: Any) -> str:
+        """Normalized text of a scalar grounding field.
+
+        ``str(value or "").strip()`` is exactly what the section
+        renderer composes, so a scalar renders content - and counts as
+        grounding - iff this returns non-empty: ``5`` renders ``"5"``
+        while ``None``, ``""``, ``0`` and whitespace-only values render
+        nothing.
+        """
+        return str(value or "").strip()
+
+    @staticmethod
+    def _grounding_items(value: Any) -> list[str]:
+        """Normalized non-blank items of a list grounding field.
+
+        A bare string counts as one item, matching the section
+        renderer; anything that is not a list contributes nothing and
+        blank items are dropped, so ``[" ", ""]`` renders no section and
+        carries no grounding.
+        """
+        raw = [value] if isinstance(value, str) else value
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    @staticmethod
+    def _file_excerpt(item: Any) -> str:
+        """Normalized excerpt text one ``files`` entry contributes.
+
+        Only object entries carry ``content``; the strip matches the
+        grounding gate, so an entry produces a ``## File:`` section iff
+        it counts as grounding.
+        """
+        if not isinstance(item, dict):
+            return ""
+        return str(item.get("content", "")).strip()
+
+    @staticmethod
     def _question_content(
         question: str,
         context: str,
@@ -535,14 +573,15 @@ class PartnerMCPServer:
         extra_sections: list[str] | None = None,
     ) -> str:
         parts = [question]
+        context = PartnerMCPServer._grounding_text(context)
         if context:
             parts.append("## Context\n" + context)
         if extra_sections:
             parts.extend(extra_sections)
         for item in files:
-            name = str(item.get("name", "file"))
-            content = str(item.get("content", ""))
+            content = PartnerMCPServer._file_excerpt(item)
             if content:
+                name = str(item.get("name", "file"))
                 parts.append(f"## File: {name}\n```\n{content}\n```")
         return "\n\n".join(parts)
 
@@ -552,25 +591,26 @@ class PartnerMCPServer:
 
         The grounding fields are ``decision_to_make``,
         ``options_considered``, ``constraints``, ``context``,
-        ``context_pack`` and ``files``; a non-blank string or a non-empty
-        array counts. Ask calls without any of them get the fail-soft
+        ``context_pack`` and ``files``. A field counts exactly when it
+        would compose grounding content - scalars via
+        ``_grounding_text``, the two list fields via ``_grounding_items``
+        and ``files`` when any entry yields a non-blank
+        ``_file_excerpt`` - so the check can never diverge from what
+        ``_question_content`` and ``_advisory_sections`` render. Ask
+        calls without any of them get the fail-soft
         clarifying-questions instruction appended to the composed user
         message instead of letting the partner answer ungrounded.
         """
-        for key in (
-            "decision_to_make",
-            "options_considered",
-            "constraints",
-            "context",
-            "context_pack",
-            "files",
-        ):
-            value = args.get(key)
-            if isinstance(value, str) and value.strip():
+        for key in ("decision_to_make", "context", "context_pack"):
+            if PartnerMCPServer._grounding_text(args.get(key)):
                 return True
-            if isinstance(value, list) and value:
+        for key in ("options_considered", "constraints"):
+            if PartnerMCPServer._grounding_items(args.get(key)):
                 return True
-        return False
+        files = args.get("files")
+        return isinstance(files, list) and any(
+            PartnerMCPServer._file_excerpt(item) for item in files
+        )
 
     @staticmethod
     def _advisory_sections(args: dict[str, Any]) -> list[str]:
@@ -581,26 +621,23 @@ class PartnerMCPServer:
         calls compose equal prompts. ``context_pack`` keeps its own
         labeled section instead of merging into ``## Context`` so the
         ad-hoc context and the caller-managed project brief stay
-        distinguishable for the partner. Only supplied fields produce a
-        section; blank values are dropped.
+        distinguishable for the partner. Sections are built from the
+        same ``_grounding_*`` normalization the ``_grounded`` gate
+        applies; only supplied fields produce a section and blank
+        values are dropped.
         """
         sections = []
-        decision = str(args.get("decision_to_make") or "").strip()
+        decision = PartnerMCPServer._grounding_text(args.get("decision_to_make"))
         if decision:
             sections.append("## Decision to make\n" + decision)
         for key, title in (
             ("options_considered", "## Options considered"),
             ("constraints", "## Constraints"),
         ):
-            raw = args.get(key)
-            if isinstance(raw, str):
-                raw = [raw]
-            if not isinstance(raw, list):
-                continue
-            items = [str(item).strip() for item in raw if str(item).strip()]
+            items = PartnerMCPServer._grounding_items(args.get(key))
             if items:
                 sections.append(title + "\n" + "\n".join(f"- {item}" for item in items))
-        context_pack = str(args.get("context_pack") or "").strip()
+        context_pack = PartnerMCPServer._grounding_text(args.get("context_pack"))
         if context_pack:
             sections.append("## Context pack\n" + context_pack)
         return sections
@@ -749,7 +786,7 @@ class PartnerMCPServer:
                     "invalid_request", "messages require role user|assistant|model and text"
                 )
             messages.append({"role": "assistant" if role == "model" else role, "content": text})
-        context = str(args.get("context") or "")
+        context = self._grounding_text(args.get("context"))
         lead_parts = []
         if context:
             lead_parts.append("## Context\n" + context)
