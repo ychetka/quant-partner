@@ -262,6 +262,289 @@ class AdvisoryHarnessTest(unittest.TestCase):
                 self.assertNotIn("SPDX-License-Identifier", prompt)
 
 
+GROUNDING_FIELDS = ("decision_to_make", "options_considered", "constraints", "context_pack")
+
+
+class AdvisoryGroundingContractTest(unittest.TestCase):
+    """Issue #48: grounding contract fields on the advisory toolset only."""
+
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"PARTNER_CONFIG": str(CONFIG_EXAMPLE)}, clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+
+    def test_advisory_schemas_expose_grounding_fields(self):
+        for partner_id in ADVISORY_PARTNERS:
+            with self.subTest(partner=partner_id):
+                tools = {tool["name"]: tool for tool in PartnerMCPServer(partner_id).tools()}
+                for name in ("ask_partner", "ask_partner_v2", "ask_partner_dialog"):
+                    with self.subTest(partner=partner_id, tool=name):
+                        properties = tools[name]["inputSchema"]["properties"]
+                        for field in GROUNDING_FIELDS:
+                            self.assertIn(field, properties)
+                        self.assertEqual(properties["decision_to_make"]["type"], "string")
+                        self.assertEqual(properties["context_pack"]["type"], "string")
+                        for field in ("options_considered", "constraints"):
+                            self.assertEqual(properties[field]["type"], "array")
+                            self.assertEqual(properties[field]["items"], {"type": "string"})
+
+    def test_non_advisory_toolsets_do_not_expose_grounding_fields(self):
+        partners = json.loads(CONFIG_EXAMPLE.read_text(encoding="utf-8"))["partners"]
+        non_advisory = {
+            partner_id
+            for partner_id, raw in partners.items()
+            if raw.get("enabled", True) and raw.get("toolset") != "advisory"
+        }
+        # The sweep must really cover every enabled non-advisory
+        # partner - one per code, product and review toolset. Disabled
+        # partners cannot be loaded, so they cannot be checked here.
+        self.assertEqual(
+            {"gh-copilot-partner", "gemini-product", "code-reviewer"},
+            non_advisory,
+        )
+        for partner_id in sorted(non_advisory):
+            for tool in PartnerMCPServer(partner_id).tools():
+                properties = tool["inputSchema"]["properties"]
+                for field in GROUNDING_FIELDS:
+                    with self.subTest(partner=partner_id, tool=tool["name"], field=field):
+                        self.assertNotIn(field, properties)
+
+    def test_grounded_helper(self):
+        grounded = PartnerMCPServer._grounded
+        self.assertFalse(grounded({"question": "q?"}))
+        self.assertFalse(grounded({"question": "q?", "context": "   "}))
+        self.assertFalse(grounded({"question": "q?", "options_considered": []}))
+        for args in (
+            {"decision_to_make": "pick one"},
+            {"options_considered": ["a"]},
+            {"constraints": ["c"]},
+            {"context": "ctx"},
+            {"context_pack": "brief"},
+            {"files": [{"name": "f", "content": "x"}]},
+        ):
+            with self.subTest(args=args):
+                self.assertTrue(grounded(args))
+
+    def test_grounded_helper_blank_renderings_do_not_count(self):
+        # A field counts as grounding only when it would render
+        # grounding content: blank-only items, whitespace scalars and
+        # files entries without content render nothing, so they must
+        # not let a bare question escape the fail-soft instruction.
+        grounded = PartnerMCPServer._grounded
+        for args in (
+            {"options_considered": [" ", ""]},
+            {"options_considered": "  "},
+            {"options_considered": 5},
+            {"constraints": [""]},
+            {"files": []},
+            {"files": [{"name": "f"}]},
+            {"files": [{"name": "f", "content": ""}]},
+            {"files": [{"name": "f", "content": "  "}]},
+            {"files": ["f.txt"]},
+            {"context": "\t \n"},
+            {"context_pack": "  "},
+            {"decision_to_make": 0},
+        ):
+            with self.subTest(args=args):
+                self.assertFalse(grounded(args))
+
+    def test_grounded_helper_non_string_values(self):
+        # The renderer coerces values with str(), so non-string scalars
+        # and items that render a section count as grounded too.
+        grounded = PartnerMCPServer._grounded
+        for args in (
+            {"decision_to_make": 5},
+            {"context_pack": 5},
+            {"context": 5},
+            {"options_considered": [5]},
+            {"files": [{"name": "f", "content": 5}]},
+        ):
+            with self.subTest(args=args):
+                self.assertTrue(grounded(args))
+
+    def test_composed_message_labeled_sections_in_stable_order(self):
+        server = PartnerMCPServer("pm-partner")
+        content = server._ask_messages(
+            {
+                "question": "Which option?",
+                "context": "ad-hoc context",
+                "decision_to_make": "pick A or B",
+                "options_considered": ["A", "B"],
+                "constraints": ["budget cap", "no new hires"],
+                "context_pack": "project brief",
+                "files": [{"name": "f.txt", "content": "data"}],
+            }
+        )[0]["content"]
+        expected_order = [
+            "Which option?",
+            "## Context\nad-hoc context",
+            "## Decision to make\npick A or B",
+            "## Options considered\n- A\n- B",
+            "## Constraints\n- budget cap\n- no new hires",
+            "## Context pack\nproject brief",
+            "## File: f.txt",
+        ]
+        position = 0
+        for marker in expected_order:
+            with self.subTest(marker=marker):
+                next_position = content.find(marker)
+                self.assertGreaterEqual(next_position, position)
+                position = next_position
+        # Grounded call: no clarifying-questions instruction.
+        self.assertNotIn("clarifying questions", content)
+
+    def test_composed_message_omits_unsupplied_sections(self):
+        server = PartnerMCPServer("pm-partner")
+        content = server._ask_messages(
+            {"question": "q?", "context": "ctx", "constraints": ["only one"]}
+        )[0]["content"]
+        self.assertIn("## Constraints\n- only one", content)
+        self.assertNotIn("## Decision to make", content)
+        self.assertNotIn("## Options considered", content)
+        self.assertNotIn("## Context pack", content)
+        # Blank values produce no section either.
+        blank = server._ask_messages(
+            {"question": "q?", "context": "ctx", "decision_to_make": "  "}
+        )[0]["content"]
+        self.assertNotIn("## Decision to make", blank)
+
+    def test_ungrounded_ask_injects_clarifying_questions_instruction(self):
+        server = PartnerMCPServer("pm-partner")
+        content = server._ask_messages({"question": "q?"})[0]["content"]
+        self.assertIn("## Missing grounding", content)
+        self.assertIn("exactly 2-3 numbered clarifying questions", content)
+        self.assertTrue(content.endswith("do not attempt to answer yet."))
+
+    def test_grounded_ask_has_no_instruction(self):
+        server = PartnerMCPServer("pm-partner")
+        for field_args in (
+            {"context": "ctx"},
+            {"context_pack": "brief"},
+            {"decision_to_make": "d"},
+            {"options_considered": ["o"]},
+            {"constraints": ["c"]},
+            {"files": [{"name": "f", "content": "x"}]},
+        ):
+            with self.subTest(field_args=field_args):
+                content = server._ask_messages({"question": "q?", **field_args})[0]["content"]
+                self.assertNotIn("## Missing grounding", content)
+
+    def test_blank_grounding_fields_keep_ungrounded_instruction(self):
+        # Whitespace-only grounding values render no section, so the
+        # call stays ungrounded and keeps the clarifying-questions
+        # instruction appended.
+        server = PartnerMCPServer("pm-partner")
+        for field_args in (
+            {"context": "  "},
+            {"options_considered": [" ", ""]},
+            {"constraints": [""]},
+            {"files": [{"name": "f"}]},
+            {"files": [{"name": "f", "content": "  "}]},
+        ):
+            with self.subTest(field_args=field_args):
+                content = server._ask_messages({"question": "q?", **field_args})[0]["content"]
+                self.assertIn("## Missing grounding", content)
+                for marker in (
+                    "## Context\n",
+                    "## Options considered",
+                    "## Constraints",
+                    "## File:",
+                ):
+                    self.assertNotIn(marker, content)
+
+    def test_non_string_grounding_scalar_counts_as_grounded(self):
+        # decision_to_make=5 renders a real section, so the call is
+        # grounded: no clarifying-questions instruction is appended.
+        server = PartnerMCPServer("pm-partner")
+        content = server._ask_messages({"question": "q?", "decision_to_make": 5})[0]["content"]
+        self.assertIn("## Decision to make\n5", content)
+        self.assertNotIn("## Missing grounding", content)
+
+    def test_non_advisory_ask_ignores_grounding_fields(self):
+        server = PartnerMCPServer("gh-copilot-partner")
+        content = server._ask_messages(
+            {
+                "question": "q?",
+                "decision_to_make": "d",
+                "options_considered": ["o"],
+                "constraints": ["c"],
+                "context_pack": "brief",
+            }
+        )[0]["content"]
+        self.assertEqual(content, "q?")
+
+    def test_dialog_context_pack_joins_leading_context_turn(self):
+        server = PartnerMCPServer("pm-partner")
+        sent = server._dialog_messages(
+            {
+                "messages": [{"role": "user", "text": "hi"}],
+                "context": "ad-hoc context",
+                "context_pack": "project brief",
+            }
+        )
+        self.assertEqual(
+            sent[0],
+            {
+                "role": "user",
+                "content": "## Context\nad-hoc context\n\n## Context pack\nproject brief",
+            },
+        )
+        self.assertEqual(sent[1], {"role": "user", "content": "hi"})
+
+    def test_dialog_context_pack_alone_forms_leading_turn(self):
+        server = PartnerMCPServer("pm-partner")
+        sent = server._dialog_messages(
+            {
+                "messages": [{"role": "user", "text": "hi"}],
+                "context_pack": "project brief",
+            }
+        )
+        self.assertEqual(sent[0], {"role": "user", "content": "## Context pack\nproject brief"})
+        self.assertEqual(len(sent), 2)
+
+    def test_dialog_grounding_fields_join_leading_turn(self):
+        server = PartnerMCPServer("pm-partner")
+        sent = server._dialog_messages(
+            {
+                "messages": [{"role": "user", "text": "hi"}],
+                "decision_to_make": "pick A or B",
+                "options_considered": ["A"],
+            }
+        )
+        self.assertEqual(
+            sent[0],
+            {
+                "role": "user",
+                "content": "## Decision to make\npick A or B\n\n## Options considered\n- A",
+            },
+        )
+
+    def test_dialog_never_gets_ungrounded_instruction(self):
+        server = PartnerMCPServer("pm-partner")
+        sent = server._dialog_messages({"messages": [{"role": "user", "text": "hi"}]})
+        self.assertEqual(sent, [{"role": "user", "content": "hi"}])
+
+    def test_non_advisory_dialog_ignores_grounding_fields(self):
+        server = PartnerMCPServer("gemini-product")
+        sent = server._dialog_messages(
+            {
+                "messages": [{"role": "user", "text": "hi"}],
+                "context": "ctx",
+                "context_pack": "brief",
+                "decision_to_make": "d",
+            }
+        )
+        self.assertEqual(
+            sent,
+            [
+                {"role": "user", "content": "## Context\nctx"},
+                {"role": "user", "content": "hi"},
+            ],
+        )
+
+
 REVIEW_ONLY_TOOLS = ("review_code", "list_reviewer_models")
 
 ASK_TOOL_NAMES = (

@@ -27,6 +27,18 @@ from .config import (
 )
 from .errors import PartnerError, invalid_config, sanitize
 
+# Final block appended to an ungrounded advisory ask message: with no
+# grounding fields at all the partner must elicit the missing context
+# instead of inventing an answer.
+_UNGROUNDED_INSTRUCTION = (
+    "## Missing grounding\n"
+    "This request carries none of the advisory grounding fields "
+    "(context, context_pack, decision_to_make, options_considered, "
+    "constraints or files). Because the request lacks grounding, respond "
+    "with exactly 2-3 numbered clarifying questions and nothing else - "
+    "do not attempt to answer yet."
+)
+
 
 class PartnerMCPServer:
     def __init__(self, partner_id: str) -> None:
@@ -228,6 +240,49 @@ class PartnerMCPServer:
     def _string_arg(description: str) -> dict[str, str]:
         return {"type": "string", "description": description}
 
+    @staticmethod
+    def _advisory_grounding_properties() -> dict[str, Any]:
+        """Optional grounding fields advertised only by the advisory toolset.
+
+        The values compose into the prompt as labeled sections; see
+        ``_advisory_sections`` for the rendering order. Other toolsets
+        keep the plain ``question``/``context``/``files`` surface.
+        """
+        return {
+            "decision_to_make": {
+                "type": "string",
+                "description": (
+                    "Advisory grounding field: the decision this call should "
+                    "help the caller make; composed as a '## Decision to make' "
+                    "section"
+                ),
+            },
+            "options_considered": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Advisory grounding field: options already on the table; "
+                    "composed as a bulleted '## Options considered' section"
+                ),
+            },
+            "constraints": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Advisory grounding field: hard constraints the answer "
+                    "must respect; composed as a bulleted '## Constraints' section"
+                ),
+            },
+            "context_pack": {
+                "type": "string",
+                "description": (
+                    "Advisory grounding field: caller-managed project brief "
+                    "(context pack); composed as a '## Context pack' section "
+                    "kept separate from '## Context'"
+                ),
+            },
+        }
+
     def _review_tools(self) -> list[dict[str, Any]]:
         return [
             {
@@ -328,6 +383,11 @@ class PartnerMCPServer:
             "model": self._string_arg("Optional model override"),
             "role": self._string_arg("Optional named model role from config.models"),
         }
+        # Grounding contract fields exist only on the advisory toolset;
+        # code/product/review keep the plain ask surface unchanged.
+        advisory_properties = (
+            self._advisory_grounding_properties() if self._toolset() == "advisory" else {}
+        )
         ask_schema = {
             "type": "object",
             "properties": {
@@ -347,6 +407,7 @@ class PartnerMCPServer:
                         "required": ["name", "content"],
                     },
                 },
+                **advisory_properties,
                 **common_properties,
             },
             "required": ["question"],
@@ -373,6 +434,7 @@ class PartnerMCPServer:
                     "added as a leading user context turn before the "
                     "message history"
                 ),
+                **advisory_properties,
                 **common_properties,
             },
             "required": ["messages"],
@@ -466,16 +528,119 @@ class PartnerMCPServer:
         return "\n".join(lines)
 
     @staticmethod
-    def _question_content(question: str, context: str, files: list[dict[str, str]]) -> str:
+    def _grounding_text(value: Any) -> str:
+        """Normalized text of a scalar grounding field.
+
+        ``str(value or "").strip()`` is exactly what the section
+        renderer composes, so a scalar renders content - and counts as
+        grounding - iff this returns non-empty: ``5`` renders ``"5"``
+        while ``None``, ``""``, ``0`` and whitespace-only values render
+        nothing.
+        """
+        return str(value or "").strip()
+
+    @staticmethod
+    def _grounding_items(value: Any) -> list[str]:
+        """Normalized non-blank items of a list grounding field.
+
+        A bare string counts as one item, matching the section
+        renderer; anything that is not a list contributes nothing and
+        blank items are dropped, so ``[" ", ""]`` renders no section and
+        carries no grounding.
+        """
+        raw = [value] if isinstance(value, str) else value
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    @staticmethod
+    def _file_excerpt(item: Any) -> str:
+        """Normalized excerpt text one ``files`` entry contributes.
+
+        Only object entries carry ``content``; the strip matches the
+        grounding gate, so an entry produces a ``## File:`` section iff
+        it counts as grounding.
+        """
+        if not isinstance(item, dict):
+            return ""
+        return str(item.get("content", "")).strip()
+
+    @staticmethod
+    def _question_content(
+        question: str,
+        context: str,
+        files: list[dict[str, str]],
+        extra_sections: list[str] | None = None,
+    ) -> str:
         parts = [question]
+        context = PartnerMCPServer._grounding_text(context)
         if context:
             parts.append("## Context\n" + context)
+        if extra_sections:
+            parts.extend(extra_sections)
         for item in files:
-            name = str(item.get("name", "file"))
-            content = str(item.get("content", ""))
+            content = PartnerMCPServer._file_excerpt(item)
             if content:
+                name = str(item.get("name", "file"))
                 parts.append(f"## File: {name}\n```\n{content}\n```")
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _grounded(args: dict[str, Any]) -> bool:
+        """True when a call carries at least one grounding field.
+
+        The grounding fields are ``decision_to_make``,
+        ``options_considered``, ``constraints``, ``context``,
+        ``context_pack`` and ``files``. A field counts exactly when it
+        would compose grounding content - scalars via
+        ``_grounding_text``, the two list fields via ``_grounding_items``
+        and ``files`` when any entry yields a non-blank
+        ``_file_excerpt`` - so the check can never diverge from what
+        ``_question_content`` and ``_advisory_sections`` render. Ask
+        calls without any of them get the fail-soft
+        clarifying-questions instruction appended to the composed user
+        message instead of letting the partner answer ungrounded.
+        """
+        for key in ("decision_to_make", "context", "context_pack"):
+            if PartnerMCPServer._grounding_text(args.get(key)):
+                return True
+        for key in ("options_considered", "constraints"):
+            if PartnerMCPServer._grounding_items(args.get(key)):
+                return True
+        files = args.get("files")
+        return isinstance(files, list) and any(
+            PartnerMCPServer._file_excerpt(item) for item in files
+        )
+
+    @staticmethod
+    def _advisory_sections(args: dict[str, Any]) -> list[str]:
+        """Advisory grounding fields rendered as labeled sections.
+
+        The order is stable - ``## Decision to make``, ``## Options
+        considered``, ``## Constraints``, ``## Context pack`` - so equal
+        calls compose equal prompts. ``context_pack`` keeps its own
+        labeled section instead of merging into ``## Context`` so the
+        ad-hoc context and the caller-managed project brief stay
+        distinguishable for the partner. Sections are built from the
+        same ``_grounding_*`` normalization the ``_grounded`` gate
+        applies; only supplied fields produce a section and blank
+        values are dropped.
+        """
+        sections = []
+        decision = PartnerMCPServer._grounding_text(args.get("decision_to_make"))
+        if decision:
+            sections.append("## Decision to make\n" + decision)
+        for key, title in (
+            ("options_considered", "## Options considered"),
+            ("constraints", "## Constraints"),
+        ):
+            items = PartnerMCPServer._grounding_items(args.get(key))
+            if items:
+                sections.append(title + "\n" + "\n".join(f"- {item}" for item in items))
+        context_pack = PartnerMCPServer._grounding_text(args.get("context_pack"))
+        if context_pack:
+            sections.append("## Context pack\n" + context_pack)
+        return sections
 
     def _candidate_models(
         self, cfg: PartnerConfig, skill: Skill, args: dict[str, Any]
@@ -568,7 +733,13 @@ class PartnerMCPServer:
         files = args.get("files") or []
         if not isinstance(files, list):
             raise PartnerError("invalid_request", "files must be an array")
-        content = self._question_content(question, str(args.get("context") or ""), files)
+        context = str(args.get("context") or "")
+        if self._toolset() != "advisory":
+            content = self._question_content(question, context, files)
+            return [{"role": "user", "content": content}]
+        content = self._question_content(question, context, files, self._advisory_sections(args))
+        if not self._grounded(args):
+            content += "\n\n" + _UNGROUNDED_INSTRUCTION
         return [{"role": "user", "content": content}]
 
     def _ask(self, args: dict[str, Any]) -> str:
@@ -589,7 +760,18 @@ class PartnerMCPServer:
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
-    def _dialog(self, args: dict[str, Any]) -> str:
+    def _dialog_messages(self, args: dict[str, Any]) -> list[dict[str, str]]:
+        """Validated ``*_dialog`` input rendered as a message list.
+
+        ``model`` roles normalize to ``assistant``. The ``context``
+        argument becomes a leading user turn with a ``## Context`` brief
+        inserted before the history; on the advisory toolset the
+        grounding sections from ``_advisory_sections`` join that same
+        leading turn, so ``context_pack`` is handled exactly like the
+        ``context`` argument. The fail-soft clarifying-questions rule
+        applies to the ask tools only: the supplied ``messages`` history
+        is itself grounding.
+        """
         raw = args.get("messages")
         if not isinstance(raw, list) or not raw:
             raise PartnerError("invalid_request", "messages must be a non-empty array")
@@ -604,10 +786,18 @@ class PartnerMCPServer:
                     "invalid_request", "messages require role user|assistant|model and text"
                 )
             messages.append({"role": "assistant" if role == "model" else role, "content": text})
-        context = str(args.get("context") or "")
+        context = self._grounding_text(args.get("context"))
+        lead_parts = []
         if context:
-            messages.insert(0, {"role": "user", "content": "## Context\n" + context})
-        return self._complete(messages, args)
+            lead_parts.append("## Context\n" + context)
+        if self._toolset() == "advisory":
+            lead_parts.extend(self._advisory_sections(args))
+        if lead_parts:
+            messages.insert(0, {"role": "user", "content": "\n\n".join(lead_parts)})
+        return messages
+
+    def _dialog(self, args: dict[str, Any]) -> str:
+        return self._complete(self._dialog_messages(args), args)
 
     def _review_service(self) -> ReviewService:
         cfg = self._cfg()
