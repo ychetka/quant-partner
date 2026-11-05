@@ -31,6 +31,7 @@ jobs:
       - name: Smoke tools/list over stdio
         run: >
           python3 tools/mcp_smoke.py --list
+          --expect-tool ask_partner
           --expect-tool ask_code_partner
           --expect-tool ask_code_partner_v2
       - name: Smoke partner_info call
@@ -130,6 +131,7 @@ jobs:
       - name: Smoke tools/list over stdio
         run: >
           python3 tools/mcp_smoke.py --list
+          --expect-tool ask_partner
           --expect-tool ask_code_partner
           --expect-tool ask_code_partner_v2
           --expect-tool list_partner_models

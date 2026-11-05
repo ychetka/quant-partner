@@ -65,18 +65,32 @@ class PartnerMCPServer:
         return self._backend
 
     def _toolset(self) -> str:
+        """Configured toolset, or a degraded guess when config failed to load.
+
+        Without a loaded config the real toolset is unknown, so the server
+        falls back to ``code`` for partner ids containing ``copilot`` and
+        to ``product`` for every other id. The fallback keeps ``tools()``
+        and ``call_tool`` dispatching on a stable surface in degraded mode.
+        """
         cfg = self._config
         if cfg:
             return cfg.toolset
         return "code" if "copilot" in self.partner_id else "product"
 
     def _legacy_ask_prefix(self) -> str | None:
-        """Toolset-specific legacy question-tool prefix; ``None`` for the rest.
+        """Legacy question-tool prefix of the current toolset.
 
         Every non-review toolset answers on the canonical ``ask_partner*``
         names. The ``code`` and ``product`` toolsets additionally keep
         their historical ``ask_code_partner*`` / ``ask_product_partner*``
-        names callable as legacy aliases of the canonical tools.
+        names callable as legacy aliases of the canonical tools; other
+        configured toolsets return ``None``.
+
+        The prefix follows ``_toolset()``, so when the config fails to
+        load it derives from the degraded partner-id fallback (``code``
+        for ids containing ``copilot``, ``product`` otherwise) instead of
+        returning ``None`` - the degraded ``tools()`` surface still
+        advertises the corresponding legacy aliases.
         """
         toolset = self._toolset()
         if toolset == "code":

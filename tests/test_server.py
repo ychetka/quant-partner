@@ -155,17 +155,33 @@ class ServerTest(unittest.TestCase):
         )
 
     def test_foreign_toolset_alias_rejected(self):
-        for partner_id, foreign in (
-            ("gh-copilot-partner", "ask_product_partner"),
-            ("gemini-product", "ask_code_partner"),
-        ):
-            with self.subTest(partner=partner_id, foreign=foreign):
-                server = PartnerMCPServer(partner_id)
-                server._backend = ExBackend()
-                with self.assertRaises(PartnerError) as ctx:
-                    server.call_tool(foreign, {"question": "q?"})
-                self.assertEqual(ctx.exception.code, "invalid_request")
-                self.assertEqual(server._backend.calls, [])
+        foreign_aliases = {
+            "gh-copilot-partner": (
+                "ask_product_partner",
+                "ask_product_partner_v2",
+                "ask_product_partner_dialog",
+            ),
+            "gemini-product": (
+                "ask_code_partner",
+                "ask_code_partner_v2",
+                "ask_code_partner_dialog",
+            ),
+        }
+        for partner_id, aliases in foreign_aliases.items():
+            for foreign in aliases:
+                args = (
+                    {"messages": [{"role": "user", "text": "hi"}]}
+                    if foreign.endswith("_dialog")
+                    else {"question": "q?"}
+                )
+                with self.subTest(partner=partner_id, foreign=foreign):
+                    server = PartnerMCPServer(partner_id)
+                    server._backend = ExBackend()
+                    with self.assertRaises(PartnerError) as ctx:
+                        server.call_tool(foreign, args)
+                    self.assertEqual(ctx.exception.code, "invalid_request")
+                    self.assertIn("unknown tool", ctx.exception.message)
+                    self.assertEqual(server._backend.calls, [])
 
     def test_partner_info(self):
         server = PartnerMCPServer("gh-copilot-partner")
