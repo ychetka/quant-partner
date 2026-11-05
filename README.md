@@ -128,6 +128,8 @@ Ask tools (canonical names, advertised by every non-`review` toolset - `gh-copil
 - `ask_partner_v2(question, context?, files?, skill?, role?, model?)`
 - `ask_partner_dialog(messages, context?, skill?, role?, model?)`
 
+`advisory`-toolset partners additionally accept the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` on all three ask tools - composed as labeled prompt sections, with a clarifying-questions fail-soft on ungrounded `ask_*` calls.
+
 The `code` toolset (`gh-copilot-partner`, `local-openai-partner`) and the `product` toolset (`gemini-product`) also advertise their historical names as legacy aliases of the canonical ask tools, with the same signatures:
 
 - `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog`

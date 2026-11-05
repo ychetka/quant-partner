@@ -21,7 +21,7 @@ The tool surface depends on the partner's configured `toolset`:
 - Ask tools (all non-review toolsets, canonical names): `ask_partner(question, context?, files?, skill?, role?, model?)`, `ask_partner_v2(...)`, `ask_partner_dialog(messages, context?, skill?, role?, model?)`.
 - `code` toolset (`gh-copilot-partner`, `local-openai-partner`): the canonical `ask_partner*` tools plus the legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` with the same signatures.
 - `product` toolset (`gemini-product`): the canonical `ask_partner*` tools plus the legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` with the same signatures.
-- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases.
+- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases - plus the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` described below.
 - `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
 
 The `*_v2` ask variants take the same arguments and return a JSON object `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}` instead of bare text, exposing model provenance.
@@ -32,6 +32,15 @@ Context placement:
 - `context` on `*_dialog` tools is added as a leading user turn containing a `## Context` brief, inserted before the supplied history - history message contents pass through verbatim; `model` roles are normalized to `assistant` before sending. Dialogs are stateless: pass the full `messages` history on every call.
 - `files` attaches bounded file excerpts (`[{name, content}]`); the server never reads the filesystem.
 - `skill` selects an installed skill pack per call; when omitted, the partner's configured `default_skill` is used. `model` overrides the default model and `role` selects a named model role from the partner's `models` config.
+
+Advisory grounding fields (`advisory` toolset only - other toolsets do not advertise them):
+
+- `decision_to_make` (string) - the decision this call should help the caller make; composed as a `## Decision to make` section.
+- `options_considered` (array of strings) - options already on the table; composed as a bulleted `## Options considered` section.
+- `constraints` (array of strings) - hard constraints the answer must respect; composed as a bulleted `## Constraints` section.
+- `context_pack` (string) - the caller-managed project brief; composed as a `## Context pack` section kept separate from `## Context` so the ad-hoc context and the project brief stay distinguishable.
+- All four are optional on `ask_partner`, `ask_partner_v2` and `ask_partner_dialog`. On the `ask_*` tools they compose into the user message in the stable order question, `## Context`, the grounding sections, then `## File:` excerpts; on `*_dialog` they join the same leading user context turn as `context`.
+- Fail-soft rule: an `ask_*` call carrying none of `decision_to_make`, `options_considered`, `constraints`, `context`, `context_pack` or `files` is ungrounded, and the composed message ends with an instruction to respond with exactly 2-3 numbered clarifying questions and nothing else. Any one grounding field suppresses the instruction. Dialog calls are exempt - the supplied `messages` history is itself grounding.
 
 Skill naming: installed skill names use mixed styles across partners (`product-manager` vs `market-synthesis` vs `communication`), so callers should call `list_partner_skills` on the target partner instead of guessing a name.
 
