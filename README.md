@@ -18,6 +18,8 @@ One Python entrypoint runs multiple partner instances. Each instance has its own
 - `comms-partner` - communication advisory for long-running projects: adaptive tone, Socratic dialog and caller-managed context packs (`advisory` toolset, Gemini API).
 - `openai-compatible` - optional generic backend for any OpenAI-compatible endpoint.
 
+Further docs: [docs/PARTNERS.md](docs/PARTNERS.md) - per-partner usage, tool surfaces, examples and the orchestration routing map.
+
 ## MVP architecture
 
 ```text
