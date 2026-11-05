@@ -496,9 +496,43 @@ class ConfigReloadTest(unittest.TestCase):
         warnings = [r for r in _json_records(stderr) if r.get("event") == "config_reload"]
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["outcome"], "error")
-        self.assertEqual(warnings[0]["error_code"], "invalid_config")
+        self.assertEqual(warnings[0]["reason"], "invalid_config")
+        self.assertEqual(warnings[0]["error_class"], "PartnerError")
 
-    def test_failed_reload_warns_once_until_mtime_changes(self):
+    def test_non_utf8_reload_keeps_previous_config_and_warns(self):
+        """Regression: a decode failure must not escape ``_maybe_reload``.
+
+        ``load_partner_config`` raises ``UnicodeDecodeError`` for
+        non-UTF-8 bytes - outside the PartnerError/OSError family - so
+        the broad catch has to keep serving the previous valid config
+        and emit the warn-once ``config_reload`` record.
+        """
+        server = PartnerMCPServer("gh-copilot-partner")
+        self.path.write_bytes(b'{"partners": \xff\xfe}')
+        _bump_mtime(self.path)
+        stderr = io.StringIO()
+        with patch.object(sys, "stderr", stderr):
+            info = json.loads(server.call_tool("partner_info", {}))
+        self.assertEqual(info["model"], "model-a")
+        self.assertEqual(info["config_reload_error"], "decode_error")
+        warnings = [r for r in _json_records(stderr) if r.get("event") == "config_reload"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["outcome"], "error")
+        self.assertEqual(warnings[0]["reason"], "decode_error")
+        self.assertEqual(warnings[0]["error_class"], "UnicodeDecodeError")
+
+    def test_same_mtime_different_size_still_reloads(self):
+        """Timestamp-preserving writes: the (mtime_ns, size) key catches them."""
+        server = PartnerMCPServer("gh-copilot-partner")
+        stat = self.path.stat()
+        _temp_config(self.path, model="model-longer-name")
+        # Restore the original timestamps so only the size differs.
+        os.utime(self.path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        info = json.loads(server.call_tool("partner_info", {}))
+        self.assertEqual(info["model"], "model-longer-name")
+        self.assertIsNone(info["config_reload_error"])
+
+    def test_failed_reload_warns_once_until_stamp_changes(self):
         server = PartnerMCPServer("gh-copilot-partner")
         self.path.write_text("{not json", encoding="utf-8")
         _bump_mtime(self.path)
@@ -644,6 +678,58 @@ class RequestLogTest(unittest.TestCase):
         self.assertEqual(responses[1]["result"]["content"][0]["text"], "recovered")
         records = [r for r in _json_records(stderr) if r.get("event") == "partner_call"]
         self.assertEqual([r["outcome"] for r in records], ["internal_error", "ok"])
+        # The transport also reports the crash as a structured JSON
+        # event on stderr, keeping the whole stream JSONL.
+        internal = [r for r in _json_records(stderr) if r.get("event") == "internal_error"]
+        self.assertEqual(len(internal), 1)
+        self.assertEqual(internal[0]["tool"], "ask_partner")
+        self.assertEqual(internal[0]["error_class"], "RuntimeError")
+        # No non-JSON prose line may leak into the stderr stream.
+        for line in stderr.getvalue().splitlines():
+            if line.strip():
+                self.assertIsInstance(json.loads(line), dict)
+
+    # -- review_code outcome mapping ------------------------------------------
+
+    def test_review_code_error_artifact_logs_error_outcome(self):
+        server = PartnerMCPServer("code-reviewer")
+        result, error, records, _ = self._call_logged(server, "review_code", {})
+        self.assertIsNone(error)
+        self.assertEqual(json.loads(result)["status"], "error")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "error")
+
+    def test_review_code_rejected_artifact_logs_rejected_outcome(self):
+        server = PartnerMCPServer("code-reviewer")
+        args = {
+            "head_sha": "a" * 40,
+            "base_sha": "b" * 40,
+            "diff": "x" * 200001,
+            "model": "claude",
+        }
+        result, error, records, _ = self._call_logged(server, "review_code", args)
+        self.assertIsNone(error)
+        self.assertEqual(json.loads(result)["status"], "rejected")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "rejected")
+
+    def test_review_code_ok_artifact_logs_ok_outcome(self):
+        server = PartnerMCPServer("code-reviewer")
+        ok_text = json.dumps({"status": "ok", "findings": []})
+        with patch.object(PartnerMCPServer, "_review_code", return_value=ok_text):
+            _, error, records, _ = self._call_logged(server, "review_code", {})
+        self.assertIsNone(error)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "ok")
+
+    def test_review_code_unparseable_result_logs_unknown_outcome(self):
+        server = PartnerMCPServer("code-reviewer")
+        with patch.object(PartnerMCPServer, "_review_code", return_value="not json"):
+            result, error, records, _ = self._call_logged(server, "review_code", {})
+        self.assertIsNone(error)
+        self.assertEqual(result, "not json")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["outcome"], "unknown")
 
 
 if __name__ == "__main__":

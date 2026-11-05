@@ -147,7 +147,10 @@ class PlaceholderTest(unittest.TestCase):
             "ghp_abc123xyz",
             "github_pat_11ABCDEFG",
             "gho_XYZ123",
-            "sk" "-proj-abc123DEF",
+            # Explicit concat keeps the OpenAI-style prefix split across
+            # literals (no token-shaped substring in the source) while
+            # staying stable under ruff format.
+            "sk" + "-proj-abc123DEF",
             "AIzaSyD4iE2xVSpkLlo9Kk",
             "abc123",
             "123456",
@@ -160,6 +163,20 @@ class PlaceholderTest(unittest.TestCase):
         # Below the length-6 floor or with no letter at all the value does
         # not look like an env-var name and keeps counting as a secret.
         for value in ("ABC", "123-456_789", "A1"):
+            with self.subTest(value=value):
+                self.assertFalse(is_placeholder(value))
+
+    def test_surrounding_whitespace_is_stripped_before_checks(self):
+        # Padded markers and env-var names count as placeholders exactly
+        # like their stripped forms; a whitespace-only value is empty.
+        for value in (" GITHUB_TOKEN ", "\tYOUR_TOKEN\n", "   "):
+            with self.subTest(value=value):
+                self.assertTrue(is_placeholder(value))
+
+    def test_padded_non_placeholders_stay_non_placeholders(self):
+        # Stripping never invents a placeholder: padded real-token shapes
+        # and digits-only values still count as configured secrets.
+        for value in (" ghp_abc123xyz ", " 123456 \n", "\tmixedCaseName "):
             with self.subTest(value=value):
                 self.assertFalse(is_placeholder(value))
 

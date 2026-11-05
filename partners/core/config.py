@@ -84,7 +84,9 @@ class PartnerConfig:
 def is_placeholder(value: str) -> bool:
     """True for empty values, explicit marker texts and env-var-style names.
 
-    Besides the marker substrings in ``_PLACEHOLDERS``, a bare
+    The value is stripped first, so ``" GITHUB_TOKEN "`` and a
+    whitespace-only string behave exactly like ``"GITHUB_TOKEN"`` and
+    ``""``. Besides the marker substrings in ``_PLACEHOLDERS``, a bare
     environment-variable-style name - uppercase letters, digits,
     underscores or hyphens only, at least six characters, with at least
     one letter - counts as a placeholder (for example ``GITHUB_TOKEN``
@@ -96,6 +98,7 @@ def is_placeholder(value: str) -> bool:
     false positive; supply it through a ``QP_AUTH_*`` env override or
     rename it in that case.
     """
+    value = value.strip()
     upper = value.upper()
     if not value or any(marker in upper for marker in _PLACEHOLDERS):
         return True

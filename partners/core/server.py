@@ -40,7 +40,7 @@ class PartnerMCPServer:
         # exact file, so a later PARTNER_CONFIG env change cannot redirect
         # a running process at a different config.
         self._config_path = config_path()
-        self._config_mtime_ns = self._stat_config_mtime_ns()
+        self._config_stamp = self._stat_config_stamp()
         try:
             self._config = load_partner_config(partner_id)
         except PartnerError as e:
@@ -62,57 +62,95 @@ class PartnerMCPServer:
         except Exception:
             pass
 
-    def _stat_config_mtime_ns(self) -> int | None:
-        """mtime_ns of the resolved config path, or None when it cannot be stat-ed."""
+    def _stat_config_stamp(self) -> tuple[int, int] | None:
+        """``(st_mtime_ns, st_size)`` of the resolved config path.
+
+        Both fields form the change key so timestamp-preserving writes
+        that alter the file size still trigger a reload; ``None`` means
+        the file cannot be stat-ed (missing or unreadable).
+        """
         try:
-            return self._config_path.stat().st_mtime_ns
+            stat = self._config_path.stat()
         except OSError:
             return None
+        return stat.st_mtime_ns, stat.st_size
 
-    def _warn_config_reload(self, reason: str, error: BaseException | None = None) -> None:
-        """Record and emit a structured warning for a failed config reload."""
-        code = ""
+    @staticmethod
+    def _reload_error_reason(error: BaseException | None) -> str:
+        """Stable short reason code for a failed config reload.
+
+        The value is also what ``partner_info`` reports as
+        ``config_reload_error``:
+
+        - ``unreadable``: the file is missing or cannot be stat-ed/read
+          (``error`` is ``None`` or an ``OSError``);
+        - ``decode_error``: the file bytes are not UTF-8
+          (``UnicodeDecodeError``) or fail JSON decoding before the
+          config validator can wrap them;
+        - the ``PartnerError.code`` itself (for example
+          ``invalid_config``) for a readable file that fails validation;
+        - ``internal_error``: any other unexpected exception.
+        """
+        if error is None or isinstance(error, OSError):
+            return "unreadable"
         if isinstance(error, PartnerError):
-            code = error.code
-        elif error is not None:
-            code = type(error).__name__
-        self._config_reload_error = code or reason
+            return error.code or "invalid_config"
+        if isinstance(error, (UnicodeDecodeError, json.JSONDecodeError)):
+            return "decode_error"
+        return "internal_error"
+
+    def _warn_config_reload(self, error: BaseException | None = None) -> None:
+        """Record and emit a structured warning for a failed config reload.
+
+        ``reason`` carries the stable code from ``_reload_error_reason``;
+        ``error_class`` names the exception type for debugging and is
+        ``None`` when the file simply cannot be stat-ed.
+        """
+        reason = self._reload_error_reason(error)
+        self._config_reload_error = reason
         self._log_event(
             {
                 "event": "config_reload",
                 "partner_id": self.partner_id,
                 "config": str(self._config_path),
                 "reason": reason,
-                "error_code": code,
+                "error_class": type(error).__name__ if error is not None else None,
                 "outcome": "error",
             }
         )
 
     def _maybe_reload(self) -> None:
-        """Hot-reload the partner config when the file mtime changed.
+        """Hot-reload the partner config when the file stamp changed.
 
         The stored ``PARTNER_CONFIG`` path is stat-ed once per check; a
-        changed ``st_mtime_ns`` re-runs ``load_partner_config`` on that
-        exact path. A successful reload swaps in the new config and drops
-        the cached backend so fresh auth/options take effect immediately;
-        a failed reload keeps the last valid config, records
+        changed ``(st_mtime_ns, st_size)`` pair re-runs
+        ``load_partner_config`` on that exact path. A successful reload
+        swaps in the new config and drops the cached backend so fresh
+        auth/options take effect immediately; ANY failed reload -
+        invalid JSON, non-UTF-8 bytes, permission errors or unexpected
+        exceptions - keeps the last valid config, records
         ``_config_reload_error`` and emits one ``config_reload`` warning
         line to stderr - it never switches the server into an error
         state. A missing or unreadable file keeps the cached config and
-        warns once per transition (``_config_mtime_ns`` is reset to None
+        warns once per transition (``_config_stamp`` is reset to None
         so a reappearing file is picked up again).
         """
-        mtime_ns = self._stat_config_mtime_ns()
-        if mtime_ns == self._config_mtime_ns:
+        stamp = self._stat_config_stamp()
+        if stamp == self._config_stamp:
             return
-        self._config_mtime_ns = mtime_ns
-        if mtime_ns is None:
-            self._warn_config_reload("config file is not readable")
+        self._config_stamp = stamp
+        if stamp is None:
+            self._warn_config_reload()
             return
         try:
             cfg = load_partner_config(self.partner_id, self._config_path)
-        except (PartnerError, OSError) as e:
-            self._warn_config_reload("config reload failed; keeping previous config", e)
+        except Exception as e:
+            # Broad catch by design: ``load_partner_config`` can raise
+            # beyond PartnerError/OSError (for example UnicodeDecodeError
+            # on non-UTF-8 bytes), and any reload failure must keep
+            # serving the previous valid config instead of breaking
+            # every subsequent call.
+            self._warn_config_reload(e)
             return
         self._config = cfg
         self._config_error = None
@@ -616,27 +654,54 @@ class PartnerMCPServer:
                 backend=cfg.backend,
             )
 
+    @staticmethod
+    def _review_outcome(text: str) -> str:
+        """Map a serialized ``review_code`` artifact to the call outcome.
+
+        ``review_code`` keeps an always-artifact contract: even failures
+        return a JSON payload instead of raising, so the transport-level
+        outcome is derived from the artifact ``status``. Known statuses
+        (``ok``, ``error``, ``rejected``) pass through unchanged; an
+        unparseable payload or a missing/unknown status is logged as
+        ``unknown``.
+        """
+        try:
+            payload = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            return "unknown"
+        status = payload.get("status") if isinstance(payload, dict) else None
+        return status if status in ("ok", "error", "rejected") else "unknown"
+
     def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Dispatch one tool call: config hot-reload, timing, request log.
 
         Exactly one ``partner_call`` JSON line goes to stderr per call
         with the tool name, resolved skill/model metadata when
-        determinable, latency and outcome. Question, context and file
-        contents are never logged; the line is sanitized against
-        ``secrets()`` before writing.
+        determinable, latency and outcome. Outcome is ``ok`` on success,
+        the ``PartnerError.code`` on a raised partner error and
+        ``internal_error`` on unexpected exceptions; ``review_code``
+        never raises, so its outcome is mapped from the returned
+        artifact ``status`` (``ok``/``error``/``rejected``, or
+        ``unknown`` for an unrecognizable payload). Question, context
+        and file contents are never logged; the line is sanitized
+        against ``secrets()`` before writing.
         """
         self._maybe_reload()
         self._call_meta = {}
         start = time.monotonic()
         outcome = "ok"
         try:
-            return self._dispatch(name, arguments)
+            text = self._dispatch(name, arguments)
         except PartnerError as e:
             outcome = e.code
             raise
         except Exception:
             outcome = "internal_error"
             raise
+        else:
+            if name == "review_code":
+                outcome = self._review_outcome(text)
+            return text
         finally:
             self._log_event(
                 {
