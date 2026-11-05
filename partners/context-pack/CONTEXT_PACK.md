@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Context Pack - startup / project brief template
 
-Fill this template once per venture and keep it under caller control. Pass this file's content in the `context` field of each `ask_partner` / `ask_partner_dialog` call: the server is stateless - the caller owns the brief. Update it as the venture evolves and flag anything that contradicts earlier versions.
+Fill this template once per venture and keep it under caller control. Pass this file's content in the `context` field of each `ask_partner` / `ask_partner_dialog` call: the server is stateless - the caller owns the brief. Paste only the brief body below the license header - the header comment is repository metadata and should not be sent to the model. Update it as the venture evolves and flag anything that contradicts earlier versions.
 
 ## Identity
 

@@ -112,7 +112,9 @@ class AdvisoryConfigTest(unittest.TestCase):
 
 class AdvisoryToolSurfaceTest(unittest.TestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {"PARTNER_CONFIG": str(CONFIG_EXAMPLE)})
+        # clear=True keeps stray QP_AUTH_*/QP_MODEL_* overrides from the
+        # ambient environment out of auth_configured assertions.
+        self.env = patch.dict(os.environ, {"PARTNER_CONFIG": str(CONFIG_EXAMPLE)}, clear=True)
         self.env.start()
 
     def tearDown(self):

@@ -123,19 +123,19 @@ Common tools:
 
 - `ask_code_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_code_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_code_partner_dialog(messages, skill?, role?, model?)`
+- `ask_code_partner_dialog(messages, context?, skill?, role?, model?)`
 
 `gemini-product` tools:
 
 - `ask_product_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_product_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_product_partner_dialog(messages, skill?, role?, model?)`
+- `ask_product_partner_dialog(messages, context?, skill?, role?, model?)`
 
 `advisory` toolset tools (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner` and any other partner configured with `"toolset": "advisory"` or an unknown toolset):
 
 - `ask_partner(question, context?, files?, skill?, role?, model?)`
 - `ask_partner_v2(question, context?, files?, skill?, role?, model?)`
-- `ask_partner_dialog(messages, skill?, role?, model?)`
+- `ask_partner_dialog(messages, context?, skill?, role?, model?)`
 
 The `*_v2` ask tools accept the same arguments as the base ask tools but return a structured JSON object instead of bare text: `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}`. `model_requested` is the candidate model that produced the answer, `model_used` is the provider-reported served model (or `null` when the backend reports none), and `model_match` is `true`/`false`/`null` - `null` when `model_used` is absent.
 
@@ -144,7 +144,7 @@ The `*_v2` ask tools accept the same arguments as the base ask tools but return 
 - `list_reviewer_models()`
 - `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)`
 
-Dialog tools are stateless: pass the whole message history in each call.
+Dialog tools are stateless: pass the whole message history in each call. The optional `context` argument carries a caller-supplied context/context-pack brief and is prepended to the first message as a `## Context` section.
 
 ## Advisory business partners
 
