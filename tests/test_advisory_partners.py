@@ -18,6 +18,7 @@ from core.config import (  # noqa: E402
     load_partner_config,
     load_skill,
 )
+from core.errors import PartnerError  # noqa: E402
 from core.server import PartnerMCPServer  # noqa: E402
 
 CONFIG_EXAMPLE = ROOT / "partners" / "config.example.json"
@@ -123,13 +124,32 @@ class AdvisoryToolSurfaceTest(unittest.TestCase):
         self.env.stop()
 
     def test_generic_advisory_tools_exposed(self):
+        # The advisory toolset advertises exactly the canonical surface:
+        # no code/product legacy aliases are added for these partners.
         for partner_id in ADVISORY_PARTNERS:
             with self.subTest(partner=partner_id):
                 server = PartnerMCPServer(partner_id)
                 names = {tool["name"] for tool in server.tools()}
-                self.assertTrue(GENERIC_TOOLS <= names)
+                self.assertEqual(names, GENERIC_TOOLS)
                 for forbidden in FORBIDDEN_TOOLS:
                     self.assertNotIn(forbidden, names)
+
+    def test_advisory_rejects_legacy_alias_names(self):
+        for partner_id in ADVISORY_PARTNERS:
+            with self.subTest(partner=partner_id):
+                server = PartnerMCPServer(partner_id)
+                for name in (
+                    "ask_code_partner",
+                    "ask_code_partner_v2",
+                    "ask_code_partner_dialog",
+                    "ask_product_partner",
+                    "ask_product_partner_v2",
+                    "ask_product_partner_dialog",
+                ):
+                    with self.subTest(partner=partner_id, name=name):
+                        with self.assertRaises(PartnerError) as ctx:
+                            server.call_tool(name, {"question": "q?"})
+                        self.assertEqual(ctx.exception.code, "invalid_request")
 
     def test_partner_info_reports_advisory_toolset(self):
         for partner_id, spec in ADVISORY_PARTNERS.items():

@@ -18,9 +18,10 @@ Each partner is a separate MCP stdio server process. The instance is selected by
 The tool surface depends on the partner's configured `toolset`:
 
 - Common tools (all non-review toolsets): `partner_info()`, `list_partner_models()`, `list_partner_skills()`.
-- `code` toolset (`gh-copilot-partner`, `local-openai-partner`): `ask_code_partner(question, context?, files?, skill?, role?, model?)`, `ask_code_partner_v2(...)`, `ask_code_partner_dialog(messages, context?, skill?, role?, model?)`.
-- `product` toolset (`gemini-product`): `ask_product_partner(...)`, `ask_product_partner_v2(...)`, `ask_product_partner_dialog(...)` with the same signatures.
-- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` with the same signatures.
+- Ask tools (all non-review toolsets, canonical names): `ask_partner(question, context?, files?, skill?, role?, model?)`, `ask_partner_v2(...)`, `ask_partner_dialog(messages, context?, skill?, role?, model?)`.
+- `code` toolset (`gh-copilot-partner`, `local-openai-partner`): the canonical `ask_partner*` tools plus the legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` with the same signatures.
+- `product` toolset (`gemini-product`): the canonical `ask_partner*` tools plus the legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` with the same signatures.
+- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, and any partner with an unknown toolset): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases.
 - `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
 
 The `*_v2` ask variants take the same arguments and return a JSON object `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}` instead of bare text, exposing model provenance.
@@ -32,11 +33,13 @@ Context placement:
 - `files` attaches bounded file excerpts (`[{name, content}]`); the server never reads the filesystem.
 - `skill` selects an installed skill pack per call; when omitted, the partner's configured `default_skill` is used. `model` overrides the default model and `role` selects a named model role from the partner's `models` config.
 
+Skill naming: installed skill names use mixed styles across partners (`product-manager` vs `market-synthesis` vs `communication`), so callers should call `list_partner_skills` on the target partner instead of guessing a name.
+
 ## gh-copilot-partner
 
 Engineering, architecture and debugging consultations through direct GitHub Copilot API access (`copilot-direct` backend). Senior-architect persona: reasons about stack choices, module boundaries, refactoring and debugging strategy, and challenges weak designs instead of agreeing.
 
-- Toolset: `code` - `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` plus the common tools.
+- Toolset: `code` - canonical `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools; legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` stay callable with the same signatures.
 - Default skill: `software-architect`.
 - Skills root: `skills/gh-copilot-partner`.
 
@@ -57,7 +60,7 @@ Call it when:
 Example:
 
 ```json
-{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_code_partner", "arguments": {"question": "Should retry/backoff live in the shared HTTP helper or in each backend adapter?", "context": "Stdlib-only MCP bridge; three backend adapters behind core/server.py; per-partner timeout_seconds; no third-party dependencies allowed.", "skill": "software-architect"}}}
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Should retry/backoff live in the shared HTTP helper or in each backend adapter?", "context": "Stdlib-only MCP bridge; three backend adapters behind core/server.py; per-partner timeout_seconds; no third-party dependencies allowed.", "skill": "software-architect"}}}
 ```
 
 Boundary notes: advisory only - it proposes designs, the caller implements and verifies. Direct Copilot access is compatibility-sensitive; trust `list_partner_models()` over hardcoded model names. Never send secrets; the harness itself refuses to request credentials.
@@ -66,7 +69,7 @@ Boundary notes: advisory only - it proposes designs, the caller implements and v
 
 Product management, UX and release consultations through the Gemini API. Product-manager persona: turns ambiguous ideas into a valuable, usable and measurable product, prefers narrow testable MVPs and makes uncertainty explicit.
 
-- Toolset: `product` - `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` plus the common tools.
+- Toolset: `product` - canonical `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools; legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` stay callable with the same signatures.
 - Default skill: `product-manager`.
 - Skills root: `skills/gemini-product`.
 
@@ -89,7 +92,7 @@ Call it when:
 Example:
 
 ```json
-{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_product_partner", "arguments": {"question": "Draft release notes from this merged-PR list and classify the semver bump signal.", "context": "Merged since v0.1.15: #31 env overrides for partner auth, #34 reviewer cache TTL fix, #36 routing docs.", "skill": "release-manager"}}}
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Draft release notes from this merged-PR list and classify the semver bump signal.", "context": "Merged since v0.1.15: #31 env overrides for partner auth, #34 reviewer cache TTL fix, #36 routing docs.", "skill": "release-manager"}}}
 ```
 
 Boundary notes: advisory only. `spec-compliance-verifier` returns a strict JSON advisory artifact - never a merge decision. `prioritization` pins its own model in the manifest, so per-skill model overrides are intentional.
@@ -241,7 +244,7 @@ Boundary notes: drafts are honest and verifiable - no inflated claims, no invent
 
 Disabled-by-default partner that talks to any OpenAI-compatible HTTP endpoint through the `openai-compatible` backend - self-hosted models, local proxies or corporate gateways. It shares the `gh-copilot-partner` harness contract and skill packs, so it answers the same engineering persona once pointed at an endpoint.
 
-- Toolset: `code` - `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` plus the common tools.
+- Toolset: `code` - canonical `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools; legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` stay callable with the same signatures.
 - Default skill: `software-architect`.
 - Skills root: `skills/gh-copilot-partner` (shared with `gh-copilot-partner` via `skills_root`).
 - Disabled in `partners/config.example.json`; enable it only in a local `partners/config.json`.
@@ -261,7 +264,7 @@ Call it when:
 Example:
 
 ```json
-{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_code_partner", "arguments": {"question": "Critique this module boundary proposal for the ingest pipeline.", "context": "Offline transcript ingest tool; stdlib-only; bounded local cache keyed by content hash.", "skill": "polyglot-developer"}}}
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Critique this module boundary proposal for the ingest pipeline.", "context": "Offline transcript ingest tool; stdlib-only; bounded local cache keyed by content hash.", "skill": "polyglot-developer"}}}
 ```
 
 Boundary notes: `options.openai.base_url` can be any host, so enabling this partner sends prompts and file context to that endpoint - enable it only for endpoints you intend. Endpoint contract and the `model_used` echo caveat are documented in [README.md](../README.md); the bundled fake server provides deterministic loopback testing without secrets.
@@ -270,19 +273,19 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 
 | Question archetype | Partner | Skill | Tool | Notes |
 | --- | --- | --- | --- | --- |
-| Architecture / stack trade-off | `gh-copilot-partner` | `software-architect` | `ask_code_partner` | System design, boundaries, decomposition |
-| Implementation plan / dependency choice | `gh-copilot-partner` | `polyglot-developer` | `ask_code_partner` | Language and library trade-offs |
-| Debugging strategy | `gh-copilot-partner` | `polyglot-developer` | `ask_code_partner` | Paste symptoms, logs and hypothesis in `question`/`context` |
-| Conversational code review | `gh-copilot-partner` | `code-reviewer` | `ask_code_partner` | Prose review of a pasted patch or design |
+| Architecture / stack trade-off | `gh-copilot-partner` | `software-architect` | `ask_partner` | System design, boundaries, decomposition |
+| Implementation plan / dependency choice | `gh-copilot-partner` | `polyglot-developer` | `ask_partner` | Language and library trade-offs |
+| Debugging strategy | `gh-copilot-partner` | `polyglot-developer` | `ask_partner` | Paste symptoms, logs and hypothesis in `question`/`context` |
+| Conversational code review | `gh-copilot-partner` | `code-reviewer` | `ask_partner` | Prose review of a pasted patch or design |
 | Second-opinion diff review (strict artifact) | `code-reviewer` | `code-reviewer` | `review_code` | Unified diff in hand; JSON artifact, `ok`/`rejected`/`error` |
 | Security review of a diff | `code-reviewer` | `security-reviewer` | `review_code` | `skill` argument selects the pack |
 | Product spec / MVP scope | `pm-partner` | `product-manager` | `ask_partner` | B2B framing with unit economics; `gemini-product`/`product-manager` as alternative |
 | Backlog prioritization (RICE/ICE/MoSCoW) | `pm-partner` | `product-manager` | `ask_partner` | `gemini-product`/`prioritization` as alternative |
 | Unit economics (LTV/CAC/payback/churn/ROI) | `pm-partner` | `product-manager` | `ask_partner` | Formulas shown; missing inputs become questions |
-| PR/issue/release triage, release notes | `gemini-product` | `release-manager` | `ask_product_partner` | Changelog drafts and semver signal; advisory only |
-| Spec compliance check (diff vs spec) | `gemini-product` | `spec-compliance-verifier` | `ask_product_partner` | Strict JSON advisory artifact, never a merge decision |
-| UX / interaction / API ergonomics | `gemini-product` | `ux-architect` | `ask_product_partner` | Flows, naming, error states, onboarding |
-| Roadmap ordering / scope cuts | `gemini-product` | `prioritization` | `ask_product_partner` | Pins its own manifest model |
+| PR/issue/release triage, release notes | `gemini-product` | `release-manager` | `ask_partner` | Changelog drafts and semver signal; advisory only |
+| Spec compliance check (diff vs spec) | `gemini-product` | `spec-compliance-verifier` | `ask_partner` | Strict JSON advisory artifact, never a merge decision |
+| UX / interaction / API ergonomics | `gemini-product` | `ux-architect` | `ask_partner` | Flows, naming, error states, onboarding |
+| Roadmap ordering / scope cuts | `gemini-product` | `prioritization` | `ask_partner` | Pins its own manifest model |
 | Market sizing / competitor matrix | `market-partner` | `market-synthesis` | `ask_partner` | Caller supplies signals; TAM/SAM/SOM labeled estimations |
 | Segmentation / personas / trend synthesis | `market-partner` | `market-synthesis` | `ask_partner` | No live data or monitoring |
 | Strategy frameworks (SWOT/PESTEL/Porter5/BCG) | `strategy-partner` | `strategy-consultant` | `ask_partner` | Named framework on request only |
@@ -291,7 +294,7 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | Founder coaching / elicitation | `comms-partner` | `communication` | `ask_partner_dialog` | Socratic: one focused question at a time |
 | Long-term project memory | `comms-partner` | `communication` | `ask_partner` / `ask_partner_dialog` | Caller-managed context pack every call |
 | Video / meeting Q&A | `media-partner` | `media-analysis` | `ask_partner` | Planned (issue #37); transcript via `context` after `tools/media_ingest.py` |
-| Self-hosted / OpenAI-compatible endpoint | `local-openai-partner` | `software-architect` | `ask_code_partner` | Disabled by default; enable only for endpoints you control |
+| Self-hosted / OpenAI-compatible endpoint | `local-openai-partner` | `software-architect` | `ask_partner` | Disabled by default; enable only for endpoints you control |
 
 Decision rules:
 
