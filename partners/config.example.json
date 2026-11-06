@@ -248,6 +248,33 @@
         "max_tokens": 8192
       },
       "timeout_seconds": 240
+    },
+    "media-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/media-partner.txt",
+      "default_skill": "media-analysis",
+      "skills_root": "skills/media-partner",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-argon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.3,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
     }
   }
 }

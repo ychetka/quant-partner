@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "media-analysis",
+  "description": "Transcript-based analysis of recorded meetings, talks and discussions: Q&A, decision extraction and summarization with [mm:ss] timestamp citations.",
+  "when_to_use": "Use for questions over a supplied transcript: what participants said about a topic, which decisions were made, meeting summaries, action items and quote lookup with timestamp citations.",
+  "generation": {
+    "temperature": 0.3
+  },
+  "version": 1
+}
