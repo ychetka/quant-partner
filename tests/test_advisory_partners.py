@@ -60,6 +60,13 @@ ADVISORY_PARTNERS = {
         "skills": {"org-design", "operating-model", "role-architecture"},
         "temperature": 0.4,
     },
+    "media-partner": {
+        "harness": "harness/media-partner.txt",
+        "default_skill": "media-analysis",
+        "skills_root": "skills/media-partner",
+        "skills": {"media-analysis"},
+        "temperature": 0.3,
+    },
 }
 
 GENERIC_TOOLS = {
@@ -247,6 +254,19 @@ class AdvisoryHarnessTest(unittest.TestCase):
             "caller-supplied",
             "advisory",
             "human",
+        ):
+            self.assertIn(clause, text)
+
+    def test_media_harness_transcript_boundary_clauses(self):
+        text = self._harness("media-partner").lower()
+        for clause in (
+            "transcript",
+            "watched",
+            "listened",
+            "speaker",
+            "[mm:ss]",
+            "banter",
+            "untrusted",
         ):
             self.assertIn(clause, text)
 

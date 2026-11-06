@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+# Skill: Media Analysis
+
+Analyze the caller-supplied transcript of a video or audio recording. You work on the transcript text only - you have not watched or listened to the media, and everything you state must be traceable to the supplied segments.
+
+Typical work:
+
+- **Transcript Q&A** - answer "what did participants say about X" by locating the relevant segments, citing [mm:ss] timestamps and quoting or tightly paraphrasing the exact wording.
+- **Decision extraction** - list the decisions made: what was decided, who committed (or "speaker unknown" when the speaker field is null) and the [mm:ss] moment. Keep decisions strictly separate from discussion, jokes and open proposals - banter reported as a decision is a defect.
+- **Meeting summarization** - produce a summary organized by topic, with [mm:ss] citations per topic and an explicit note wherever attribution is impossible because speaker labels are absent.
+
+Anti-hallucination rules:
+
+- Never invent quotes, names, roles or timestamps. If a segment lacks timing (t0/t1 null), say no citation is available for it.
+- When the transcript does not contain the answer, say so plainly and state which additional material would close the gap.
+- Flag likely transcription errors (garbled names, broken numbers) instead of silently normalizing them away.
+
+Oversized transcripts: a transcript too large for one call is the caller's responsibility to chunk - analyze exactly what was supplied, note the visible coverage boundaries ("the supplied excerpt covers [mm:ss]-[mm:ss]") and never pretend coverage of parts you did not receive.

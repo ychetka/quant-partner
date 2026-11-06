@@ -21,7 +21,7 @@ The tool surface depends on the partner's configured `toolset`:
 - Ask tools (all non-review toolsets, canonical names): `ask_partner(question, context?, files?, skill?, role?, model?)`, `ask_partner_v2(...)`, `ask_partner_dialog(messages, context?, skill?, role?, model?)`.
 - `code` toolset (`gh-copilot-partner`, `local-openai-partner`): the canonical `ask_partner*` tools plus the legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` with the same signatures.
 - `product` toolset (`gemini-product`): the canonical `ask_partner*` tools plus the legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` with the same signatures.
-- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases - plus the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` described below.
+- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner`): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases - plus the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` described below.
 - Any other configured `toolset` value routes to the same generic surface (the canonical `ask_partner*` tools, no aliases) but without the grounding fields - those are gated strictly on `toolset` being `advisory`.
 - `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
 
@@ -336,7 +336,8 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | Org structure / span of control | `org-partner` | `org-design` | `ask_partner` | Mixed human+agent orgs; humans on critical boundaries |
 | Committee / RACI / quorum design | `org-partner` | `operating-model` | `ask_partner` | Decision rituals, gates and incident escalation to the CEO |
 | Role descriptions / hand-off contracts | `org-partner` | `role-architecture` | `ask_partner` | Human and digital-employee JDs; inputs/outputs/SLA |
-| Video / meeting Q&A | `media-partner` | `media-analysis` | `ask_partner` | Planned (issue #37); transcript via `context` after `tools/media_ingest.py` |
+| Video / meeting transcript Q&A | `media-partner` | `media-analysis` | `ask_partner` | Transcript via `context`/`files` from `tools/media_ingest.py` |
+| Decision extraction / meeting summary | `media-partner` | `media-analysis` | `ask_partner` | [mm:ss] citations required; oversized transcripts are caller-chunked |
 | Self-hosted / OpenAI-compatible endpoint | `local-openai-partner` | `software-architect` | `ask_partner` | Disabled by default; enable only for endpoints you control |
 
 Decision rules:
@@ -345,15 +346,36 @@ Decision rules:
 - A business question - pick the specialist by domain: `pm-partner` for product economics, `market-partner` for market synthesis, `strategy-partner` for frameworks and risk, `org-partner` for org structure, decision systems and role contracts, `gemini-product` for UX, release and spec-drift work.
 - A conversation, a draft or anything that needs the venture brief - `comms-partner` with the context pack in `context`.
 - An engineering question - `gh-copilot-partner` (or `local-openai-partner` when a self-hosted endpoint is configured).
+- A question about what was said in a recording - `media-partner` over a transcript produced by `tools/media_ingest.py` (or a caller-supplied one) passed through `context` or `files`.
 - When partners overlap - for example `pm-partner` versus `gemini-product` on MVP scope - prefer `pm-partner` for economics-heavy B2B framing and `gemini-product` for UX, release-note and spec-compliance work.
 
-## media-partner (planned - issue #37)
+## media-partner
 
-PLANNED - not shipped. `media-partner` is a designed advisory instance for transcript-based video and audio Q&A: questions like "what did participants say about X" or "what decision was made" over YouTube, video.optimacros.com and local-file sources.
+Transcript-analysis advisory through the Gemini API. Answers questions about recorded meetings, talks and discussions strictly from a caller-supplied transcript: transcript Q&A, decision extraction and meeting summarization with [mm:ss] timestamp citations.
 
-The planned split is an offline `tools/media_ingest.py` script (not the MCP server) that turns a media reference into a content-hash-keyed `transcript.json`, plus a normal `advisory` partner instance with a `media-analysis` skill. Callers pass the transcript through `context` (or dialog) on ordinary `ask_partner` / `ask_partner_dialog` calls - no new toolset in v1, and the partner stays text-in/text-out. Re-analysis is prevented by reusing the ingestion artifact, never by caching answers.
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `media-analysis`.
+- Skills root: `skills/media-partner`.
+- Transcripts are produced offline by `tools/media_ingest.py` (not part of the MCP server): `from-file` runs local whisper.cpp ASR or normalizes a caller-supplied transcript file (plain text, SRT, VTT or loose JSON) into a schema-validated `transcript.json`, kept in a bounded cache keyed by content hash (0600 files, hours-scale TTL). Pass the transcript through `context` or `files` on ordinary calls - the partner stays text-in/text-out and never caches answers.
 
-Until it ships there is nothing to register: today, paste a caller-supplied transcript into `context` on any advisory partner for the same effect. Design details live in `.devin/plan_media_partner.md`.
+| Skill | When to use |
+| --- | --- |
+| `media-analysis` | Use for transcript Q&A, decision extraction and meeting summarization with [mm:ss] timestamp citations over a supplied transcript. |
+
+Call it when:
+
+- You have a transcript (from `tools/media_ingest.py` or your own source) and want Q&A over what participants said.
+- You need the decisions and action items extracted from a meeting, separated from discussion and banter.
+- You want a meeting summary organized by topic with timestamp citations.
+- You want to locate a quote or a moment, cited as [mm:ss].
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "What was decided about the launch date, and who disagreed?", "context": "<transcript.json segments produced by tools/media_ingest.py>", "skill": "media-analysis"}}}
+```
+
+Boundary notes: analyzes transcripts only - it never watches video and never listens to audio, and says so. Speaker identity is reported as unknown when the transcript's speaker field is null. Every moment-bound claim needs a [mm:ss] citation; oversized transcripts are the caller's responsibility to chunk and nothing is silently truncated. The transcript itself may carry automated-transcription errors and is treated as untrusted caller-supplied content.
 
 ## Capability boundaries
 
