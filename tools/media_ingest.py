@@ -24,7 +24,14 @@ Stage 1-3 scope implemented here:
   binary), while ``--transcript-file`` keeps the caller-supplied path;
 - the subprocess contract for every external binary: argv lists only
   (never ``shell=True``), explicit timeouts and binary-missing as a
-  first-class named error.
+  first-class named error;
+- ``source.ref`` privacy: the artifact may reach a remote partner, so
+  it stores only the media basename (or a caller-supplied ``--ref``
+  label) - the resolved local path is used for ASR access only and is
+  never serialized;
+- cache-hit provenance: a hit re-emits the stored transcript with the
+  current input's ``source.ref`` and a ``cache_hit: true`` flag, so the
+  artifact never carries another file's provenance.
 
 ``from-youtube`` and ``from-web-page`` are reserved subcommands for
 later stages and exit with a named not-implemented error.
@@ -86,7 +93,11 @@ _TRANSCRIPT_KEYS = {
     "generated_at",
     "generator_version",
     "schema_version",
+    "cache_hit",
 }
+# ``cache_hit`` is present only on artifacts re-emitted from the cache;
+# a freshly generated transcript must validate without it.
+_TRANSCRIPT_OPTIONAL = {"cache_hit"}
 _SOURCE_KEYS = {"kind", "ref", "transcription_method", "transcription_trust"}
 _SEGMENT_REQUIRED = {"t0", "t1", "text"}
 _SEGMENT_KEYS = _SEGMENT_REQUIRED | {"speaker"}
@@ -113,6 +124,12 @@ class UsageError(IngestError):
     """Bad CLI usage or missing local inputs (files, model paths)."""
 
     code = "invalid_usage"
+
+
+class OutputWriteError(IngestError):
+    """The transcript artifact could not be written to the --output path."""
+
+    code = "output_write_failed"
 
 
 class TranscriptSchemaError(IngestError):
@@ -196,7 +213,8 @@ def validate(obj: Any) -> None:
     ``content_hash``, segment times that are null or non-negative
     finite numbers with ``t1 >= t0`` when both are set, and a
     ``source.transcription_trust`` consistent with the declared
-    ``transcription_method``.
+    ``transcription_method``. The only optional key is ``cache_hit``,
+    which must be exactly ``true`` when present.
     """
     if not isinstance(obj, dict):
         raise TranscriptSchemaError("transcript must be a JSON object")
@@ -213,9 +231,13 @@ def validate(obj: Any) -> None:
             f"unsupported schema_version: {version}",
             f"this tool reads schema_version {SCHEMA_VERSION} transcripts only",
         )
-    for key in sorted(_TRANSCRIPT_KEYS - {"schema_version"}):
+    for key in sorted(_TRANSCRIPT_KEYS - {"schema_version"} - _TRANSCRIPT_OPTIONAL):
         if key not in obj:
             raise TranscriptSchemaError(f"missing required key: {key}")
+    # ``cache_hit`` exists only to mark a cache reuse; ``false`` would be
+    # noise, so the strict contract accepts ``true`` only.
+    if "cache_hit" in obj and obj["cache_hit"] is not True:
+        raise TranscriptSchemaError("cache_hit, when present, must be exactly true")
 
     source = obj["source"]
     if not isinstance(source, dict):
@@ -565,6 +587,12 @@ class TranscriptCache:
         if data["content_hash"] != content_hash_value:
             _unlink(path)
             return None
+        # Defense in depth: the declared content_hash is untrusted - the
+        # digest is recomputed over the stored segments and a mismatch
+        # (tampered or mis-linked entry) counts as a miss.
+        if content_hash(data["segments"]) != content_hash_value:
+            _unlink(path)
+            return None
         return data
 
     def put(self, transcript: dict[str, Any]) -> str:
@@ -746,13 +774,13 @@ def _add_output_and_cache_args(parser: argparse.ArgumentParser) -> None:
         "--cache-ttl-seconds",
         type=int,
         default=DEFAULT_CACHE_TTL_SECONDS,
-        help=f"cache TTL in seconds (default {DEFAULT_CACHE_TTL_SECONDS})",
+        help=f"cache TTL in seconds, >= 0 (default {DEFAULT_CACHE_TTL_SECONDS})",
     )
     parser.add_argument(
         "--cache-max-files",
         type=int,
         default=DEFAULT_CACHE_MAX_FILES,
-        help=f"max cached transcripts (default {DEFAULT_CACHE_MAX_FILES})",
+        help=f"max cached transcripts, a positive integer (default {DEFAULT_CACHE_MAX_FILES})",
     )
     parser.add_argument(
         "--no-cache",
@@ -784,6 +812,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     local.add_argument(
+        "--ref",
+        help=(
+            "label stored as source.ref; defaults to the media basename "
+            "(the resolved local path is never written into the artifact - "
+            "it may reach a remote partner)"
+        ),
+    )
+    local.add_argument(
         "--whisper-binary",
         default=os.environ.get(ENV_WHISPER_BINARY, DEFAULT_WHISPER_BINARY),
         help=f"whisper.cpp CLI binary (env {ENV_WHISPER_BINARY}; default whisper-cli)",
@@ -799,7 +835,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--timeout-seconds",
         type=int,
         default=DEFAULT_BINARY_TIMEOUT_SECONDS,
-        help=f"external binary timeout (default {DEFAULT_BINARY_TIMEOUT_SECONDS})",
+        help=(
+            "external binary timeout, a positive integer "
+            f"(default {DEFAULT_BINARY_TIMEOUT_SECONDS})"
+        ),
     )
     _add_output_and_cache_args(local)
 
@@ -829,25 +868,50 @@ def _emit(transcript: dict[str, Any], output: str | None) -> None:
     text = json.dumps(transcript, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if output:
         # Transcripts may hold confidential meeting content: 0600.
-        fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        try:
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError as e:
+            raise OutputWriteError(
+                f"cannot write transcript artifact: {e}",
+                "create the parent directory or pass a writable --output path",
+            ) from e
     else:
         sys.stdout.write(text)
 
 
 def _store_or_reuse(cache: TranscriptCache | None, transcript: dict[str, Any]) -> dict[str, Any]:
-    """Reuse a cached transcript for the same content_hash, else store ours."""
+    """Reuse a cached transcript for the same content_hash, else store ours.
+
+    On a hit the stored ``generated_at`` is kept - it is the transcript's
+    true creation time - but ``source.ref`` is rewritten to the current
+    input's label and a top-level ``cache_hit: true`` flag marks the
+    reuse, so the emitted artifact never carries another file's
+    provenance. The stored entry itself is left untouched.
+    """
     if cache is None:
         return transcript
     cached = cache.get(transcript["content_hash"])
     if cached is not None:
-        return cached
+        emitted = dict(cached)
+        emitted["source"] = {**cached["source"], "ref": transcript["source"]["ref"]}
+        emitted["cache_hit"] = True
+        return emitted
     cache.put(transcript)
     return transcript
 
 
 def _cmd_from_file(args: argparse.Namespace) -> int:
+    if args.timeout_seconds <= 0:
+        raise UsageError("--timeout-seconds must be a positive integer")
+    if args.cache_ttl_seconds < 0:
+        raise UsageError("--cache-ttl-seconds must be >= 0")
+    if args.cache_max_files < 1:
+        raise UsageError("--cache-max-files must be a positive integer")
+    ref = args.ref.strip() if args.ref is not None else ""
+    if args.ref is not None and not ref:
+        raise UsageError("--ref must be a non-empty label")
     media = Path(args.media_path).expanduser()
     if not media.is_file():
         raise UsageError(f"media file not found: {media}")
@@ -876,8 +940,11 @@ def _cmd_from_file(args: argparse.Namespace) -> int:
                 work_dir=Path(work_dir),
             )
         method = "local_asr"
+    # The artifact may reach a remote partner: source.ref carries only
+    # the media basename (or the --ref label); the resolved path stays
+    # local and is used solely for ASR access above.
     transcript = build_transcript(
-        kind="local_file", ref=str(media.resolve()), method=method, segments=segments
+        kind="local_file", ref=ref or media.name, method=method, segments=segments
     )
     cache = (
         None

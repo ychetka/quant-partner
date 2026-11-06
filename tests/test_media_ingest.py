@@ -187,6 +187,14 @@ class SchemaValidationTest(unittest.TestCase):
         segments = [{"t0": None, "t1": None, "text": "untimed line"}]
         self.assertIsNone(mi.validate(_transcript(segments=segments)))
 
+    def test_cache_hit_is_optional_and_true_only(self):
+        self.assertIsNone(mi.validate(_transcript()))
+        self.assertIsNone(mi.validate(_transcript(cache_hit=True)))
+        for bad in (False, "yes", 1, 0):
+            with self.subTest(cache_hit=bad):
+                with self.assertRaises(mi.TranscriptSchemaError):
+                    mi.validate(_transcript(cache_hit=bad))
+
 
 class NormalizerTest(unittest.TestCase):
     def test_srt(self):
@@ -365,6 +373,45 @@ class TranscriptCacheTest(unittest.TestCase):
             cache.prune()
             self.assertTrue((cache_dir / "keep.me").exists())
 
+    def test_segment_tamper_recomputes_hash_and_drops(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._cache(tmp)
+            digest = cache.put(_transcript())
+            path = Path(tmp) / "cache" / f"{digest.split(':', 1)[1]}.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            # Declared content_hash is left intact but the segments are
+            # forged, so the recomputed digest no longer matches the key.
+            payload["segments"][0]["text"] = "forged replacement"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertIsNone(cache.get(digest))
+            self.assertFalse(path.exists())
+
+    def test_store_or_reuse_hit_rewrites_ref_and_flags_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._cache(tmp)
+            first = _transcript()  # ref "sample.mp4", generated_at fixed above
+            emitted_fresh = mi._store_or_reuse(cache, first)
+            self.assertNotIn("cache_hit", emitted_fresh)
+            # Same segments, different input: content_hash hits the cache.
+            second = mi.build_transcript(
+                kind="local_file",
+                ref="other-name.mp4",
+                method="caller_supplied",
+                segments=_segments(),
+                generated_at="2026-11-07T09:30:00Z",
+            )
+            emitted = mi._store_or_reuse(cache, second)
+            mi.validate(emitted)
+            self.assertIs(emitted["cache_hit"], True)
+            self.assertEqual(emitted["source"]["ref"], "other-name.mp4")
+            # The cached generated_at is the transcript creation time.
+            self.assertEqual(emitted["generated_at"], "2026-11-06T12:00:00Z")
+            self.assertEqual(emitted["content_hash"], second["content_hash"])
+            # The stored entry keeps its original provenance and no flag.
+            stored = cache.get(first["content_hash"])
+            self.assertNotIn("cache_hit", stored)
+            self.assertEqual(stored["source"]["ref"], "sample.mp4")
+
 
 class SubprocessContractTest(unittest.TestCase):
     def test_missing_binary_raises_named_error(self):
@@ -453,7 +500,11 @@ class FromFileCliTest(unittest.TestCase):
             transcript = json.loads(out_path.read_text(encoding="utf-8"))
             mi.validate(transcript)
             self.assertEqual(transcript["source"]["kind"], "local_file")
-            self.assertEqual(transcript["source"]["ref"], str(media.resolve()))
+            # The artifact may reach a remote partner: only the basename
+            # is stored, never the local absolute path.
+            self.assertEqual(transcript["source"]["ref"], media.name)
+            self.assertFalse(Path(transcript["source"]["ref"]).is_absolute())
+            self.assertNotIn(str(tmp), transcript["source"]["ref"])
             self.assertEqual(transcript["source"]["transcription_method"], "caller_supplied")
             self.assertEqual(transcript["source"]["transcription_trust"], "self_transcribed")
             self.assertEqual(len(transcript["segments"]), 2)
@@ -535,6 +586,115 @@ class FromFileCliTest(unittest.TestCase):
         code, _, err = self._run_main(["from-file", "/nonexistent/file.mp4"])
         self.assertEqual(code, 1)
         self.assertIn("invalid_usage", err)
+
+    def test_from_file_ref_label_overrides_basename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "meeting.mp4"
+            media.write_bytes(b"fake media")
+            transcript_file = Path(tmp) / "meeting.srt"
+            transcript_file.write_text(SRT, encoding="utf-8")
+            out_path = Path(tmp) / "transcript.json"
+            code, _, err = self._run_main(
+                [
+                    "from-file",
+                    str(media),
+                    "--transcript-file",
+                    str(transcript_file),
+                    "--ref",
+                    "standup-notes",
+                    "--no-cache",
+                    "-o",
+                    str(out_path),
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(transcript["source"]["ref"], "standup-notes")
+
+    def test_from_file_blank_ref_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "meeting.mp4"
+            media.write_bytes(b"fake media")
+            code, out, err = self._run_main(["from-file", str(media), "--ref", "   "])
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("invalid_usage", err)
+            self.assertIn("--ref", err)
+
+    def test_from_file_cache_hit_rewrites_ref_and_flags_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript_file = Path(tmp) / "meeting.srt"
+            transcript_file.write_text(SRT, encoding="utf-8")
+            cache_dir = Path(tmp) / "cache"
+            outputs = []
+            for name in ("first.mp4", "second.mp4"):
+                media = Path(tmp) / name
+                media.write_bytes(b"fake media")
+                out_path = Path(tmp) / f"{name}.transcript.json"
+                code, _, err = self._run_main(
+                    [
+                        "from-file",
+                        str(media),
+                        "--transcript-file",
+                        str(transcript_file),
+                        "--cache-dir",
+                        str(cache_dir),
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+                self.assertEqual(code, 0, err)
+                outputs.append(json.loads(out_path.read_text(encoding="utf-8")))
+            first, second = outputs
+            mi.validate(first)
+            mi.validate(second)
+            self.assertNotIn("cache_hit", first)
+            self.assertEqual(first["source"]["ref"], "first.mp4")
+            # Same content, different file: one content_hash, one cache hit.
+            self.assertEqual(second["content_hash"], first["content_hash"])
+            self.assertIs(second["cache_hit"], True)
+            # Provenance follows the current input, not the first ingest.
+            self.assertEqual(second["source"]["ref"], "second.mp4")
+            self.assertEqual(second["generated_at"], first["generated_at"])
+
+    def test_from_file_missing_output_dir_is_named_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "meeting.mp4"
+            media.write_bytes(b"fake media")
+            transcript_file = Path(tmp) / "meeting.srt"
+            transcript_file.write_text(SRT, encoding="utf-8")
+            code, out, err = self._run_main(
+                [
+                    "from-file",
+                    str(media),
+                    "--transcript-file",
+                    str(transcript_file),
+                    "--no-cache",
+                    "-o",
+                    str(Path(tmp) / "missing-dir" / "transcript.json"),
+                ]
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("output_write_failed", err)
+            self.assertIn("missing-dir", err)
+
+    def test_from_file_numeric_args_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "meeting.mp4"
+            media.write_bytes(b"fake media")
+            for extra, needle in (
+                (["--timeout-seconds", "0"], "--timeout-seconds"),
+                (["--timeout-seconds", "-5"], "--timeout-seconds"),
+                (["--cache-ttl-seconds", "-1"], "--cache-ttl-seconds"),
+                (["--cache-max-files", "0"], "--cache-max-files"),
+            ):
+                with self.subTest(extra=extra):
+                    code, out, err = self._run_main(["from-file", str(media), *extra, "--no-cache"])
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out, "")
+                    self.assertIn("invalid_usage", err)
+                    self.assertIn(needle, err)
 
     def test_reserved_subcommands_fail_named(self):
         for command, arg in (
