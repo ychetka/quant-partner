@@ -85,7 +85,7 @@ class SchemaValidationTest(unittest.TestCase):
     def test_built_transcript_has_full_contract_shape(self):
         transcript = _transcript()
         self.assertEqual(transcript["schema_version"], 1)
-        self.assertEqual(transcript["generator_version"], "media_ingest/0.1.0")
+        self.assertEqual(transcript["generator_version"], mi.GENERATOR_VERSION)
         self.assertEqual(transcript["annotations"], [])
         self.assertRegex(transcript["content_hash"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(transcript["source"]["transcription_method"], "caller_supplied")
@@ -696,17 +696,6 @@ class FromFileCliTest(unittest.TestCase):
                     self.assertIn("invalid_usage", err)
                     self.assertIn(needle, err)
 
-    def test_reserved_subcommands_fail_named(self):
-        for command, arg in (
-            ("from-youtube", "https://example.invalid/v"),
-            ("from-web-page", "https://example.invalid/page"),
-        ):
-            with self.subTest(command=command):
-                code, _, err = self._run_main([command, arg])
-                self.assertEqual(code, 1)
-                self.assertIn("invalid_usage", err)
-                self.assertIn("not implemented", err)
-
     def test_validate_subcommand(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "t.json"
@@ -722,6 +711,602 @@ class FromFileCliTest(unittest.TestCase):
             code, _, err = self._run_main(["validate", str(path)])
             self.assertEqual(code, 1)
             self.assertIn("unsupported_schema_version", err)
+
+
+def _fake_whisper_payload():
+    return {
+        "transcription": [
+            {
+                "offsets": {"from": 0, "to": 1500},
+                "timestamps": {"from": "00:00:00,000", "to": "00:00:01,500"},
+                "text": " hello world ",
+            }
+        ]
+    }
+
+
+def _fake_run_factory(*, captions=None, media=b"fake wav", exit_code=0, stderr=""):
+    """Build a subprocess.run stand-in covering yt-dlp and whisper-cli.
+
+    ``argv`` inspection keeps the fake honest: a whisper call carries
+    ``-of`` (it writes ``<of>.json``), a captions call carries
+    ``--skip-download`` (it writes ``<base>.en.vtt``) and a media
+    download carries ``--audio-format`` (it writes ``<base>.wav``).
+    """
+
+    def fake_run(argv, **kwargs):
+        assert kwargs.get("shell") is not True
+        if "-of" in argv:  # whisper.cpp: whisper-cli ... -of <base>
+            out_base = Path(argv[argv.index("-of") + 1])
+            out_base.with_suffix(".json").write_text(
+                json.dumps(_fake_whisper_payload()), encoding="utf-8"
+            )
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        base = Path(argv[argv.index("-o") + 1])
+        if exit_code != 0:
+            return subprocess.CompletedProcess(argv, exit_code, "", stderr)
+        if "--skip-download" in argv:
+            if captions is not None:
+                Path(str(base) + ".en.vtt").write_text(captions, encoding="utf-8")
+        else:
+            if media is not None:
+                Path(str(base) + ".wav").write_bytes(media)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return fake_run
+
+
+def _which_all(name):
+    return f"/usr/bin/{name}"
+
+
+def _ingest_workspace_dirs():
+    return set(Path(tempfile.gettempdir()).glob("media-ingest-*"))
+
+
+class FromYoutubeCliTest(unittest.TestCase):
+    URL = "https://www.youtube.com/watch?v=demo123"
+
+    def _run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.object(sys, "stdout", out),
+            patch.object(sys, "stderr", err),
+        ):
+            code = mi.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_captions_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "transcript.json"
+            cache_dir = Path(tmp) / "cache"
+            before = _ingest_workspace_dirs()
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(
+                    mi.subprocess, "run", side_effect=_fake_run_factory(captions=VTT)
+                ) as run,
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-youtube",
+                        self.URL,
+                        "--cache-dir",
+                        str(cache_dir),
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual(transcript["source"]["kind"], "youtube")
+            self.assertEqual(transcript["source"]["ref"], self.URL)
+            self.assertEqual(transcript["source"]["transcription_method"], "yt_dlp_captions")
+            self.assertEqual(transcript["source"]["transcription_trust"], "platform_captions")
+            self.assertEqual(len(transcript["segments"]), 2)
+            self.assertEqual(transcript["segments"][0]["text"], "Hello there.")
+            self.assertEqual(stat.S_IMODE(out_path.stat().st_mode), 0o600)
+            cached = cache_dir / f"{transcript['content_hash'].split(':')[1]}.json"
+            self.assertTrue(cached.is_file())
+            # The captions argv contract: argv list, skip-download, no shell.
+            argv = run.call_args[0][0]
+            self.assertEqual(argv[0], "yt-dlp")
+            self.assertIn("--skip-download", argv)
+            self.assertIn("--write-auto-sub", argv)
+            self.assertEqual(argv[-1], self.URL)
+            self.assertFalse(run.call_args[1].get("shell", False))
+            # The TemporaryDirectory workspace is gone after the run.
+            self.assertEqual(_ingest_workspace_dirs(), before)
+
+    def test_captions_sub_langs_passed_through(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(
+                    mi.subprocess, "run", side_effect=_fake_run_factory(captions=VTT)
+                ) as run,
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-youtube",
+                        self.URL,
+                        "--sub-langs",
+                        "en.*",
+                        "--no-cache",
+                        "-o",
+                        str(Path(tmp) / "t.json"),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            argv = run.call_args[0][0]
+            self.assertIn("--sub-langs", argv)
+            self.assertEqual(argv[argv.index("--sub-langs") + 1], "en.*")
+
+    def test_no_captions_is_named_error(self):
+        for captions in (None, "WEBVTT\n\nonly a header, no cues"):
+            with self.subTest(captions=captions):
+                with (
+                    patch.object(mi.shutil, "which", side_effect=_which_all),
+                    patch.object(
+                        mi.subprocess,
+                        "run",
+                        side_effect=_fake_run_factory(captions=captions),
+                    ),
+                ):
+                    code, out, err = self._run_main(["from-youtube", self.URL, "--no-cache"])
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn("no_captions_available", err)
+                # The hint names both caller escape hatches.
+                self.assertIn("--transcript-file", err)
+                self.assertIn("--asr", err)
+
+    def test_ytdlp_missing_binary_named_error(self):
+        with patch.object(mi.shutil, "which", return_value=None):
+            code, out, err = self._run_main(["from-youtube", self.URL, "--no-cache"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("yt_dlp_unavailable", err)
+        self.assertIn("yt-dlp", err)
+
+    def test_ytdlp_filenotfound_maps_to_named_error(self):
+        with (
+            patch.object(mi.shutil, "which", side_effect=_which_all),
+            patch.object(mi.subprocess, "run", side_effect=FileNotFoundError),
+        ):
+            code, _, err = self._run_main(["from-youtube", self.URL, "--no-cache"])
+        self.assertEqual(code, 1)
+        self.assertIn("yt_dlp_unavailable", err)
+
+    def test_ytdlp_nonzero_exit_is_external_tool_error(self):
+        fake = _fake_run_factory(exit_code=2, stderr="ERROR: removed video")
+        with (
+            patch.object(mi.shutil, "which", side_effect=_which_all),
+            patch.object(mi.subprocess, "run", side_effect=fake),
+        ):
+            code, out, err = self._run_main(["from-youtube", self.URL, "--no-cache"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("external_tool_error", err)
+        self.assertIn("removed video", err)
+
+    def test_asr_mode_is_local_asr_trust(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            out_path = Path(tmp) / "transcript.json"
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(list(argv))
+                return _fake_run_factory()(argv, **kwargs)
+
+            before = _ingest_workspace_dirs()
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=fake_run),
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-youtube",
+                        self.URL,
+                        "--asr",
+                        "--whisper-model",
+                        str(model),
+                        "--no-cache",
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual(transcript["source"]["kind"], "youtube")
+            self.assertEqual(transcript["source"]["ref"], self.URL)
+            self.assertEqual(transcript["source"]["transcription_method"], "local_asr")
+            self.assertEqual(transcript["source"]["transcription_trust"], "self_transcribed")
+            self.assertEqual(
+                transcript["segments"],
+                [{"t0": 0.0, "t1": 1.5, "speaker": None, "text": "hello world"}],
+            )
+            ytdlp_argv, whisper_argv = calls
+            self.assertEqual(ytdlp_argv[0], "yt-dlp")
+            self.assertIn("--audio-format", ytdlp_argv)
+            self.assertNotIn("--skip-download", ytdlp_argv)
+            self.assertEqual(whisper_argv[0], "whisper-cli")
+            self.assertEqual(whisper_argv[whisper_argv.index("-m") + 1], str(model))
+            self.assertEqual(_ingest_workspace_dirs(), before)
+
+    def test_asr_and_transcript_file_are_mutually_exclusive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript_file = Path(tmp) / "t.srt"
+            transcript_file.write_text(SRT, encoding="utf-8")
+            code, out, err = self._run_main(
+                [
+                    "from-youtube",
+                    self.URL,
+                    "--asr",
+                    "--transcript-file",
+                    str(transcript_file),
+                    "--no-cache",
+                ]
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("invalid_usage", err)
+            self.assertIn("mutually exclusive", err)
+
+    def test_asr_requires_whisper_model(self):
+        code, out, err = self._run_main(["from-youtube", self.URL, "--asr", "--no-cache"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("invalid_usage", err)
+        self.assertIn("--whisper-model", err)
+
+    def test_transcript_file_skips_ytdlp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript_file = Path(tmp) / "t.srt"
+            transcript_file.write_text(SRT, encoding="utf-8")
+            out_path = Path(tmp) / "t.json"
+            code, _, err = self._run_main(
+                [
+                    "from-youtube",
+                    self.URL,
+                    "--transcript-file",
+                    str(transcript_file),
+                    "--no-cache",
+                    "-o",
+                    str(out_path),
+                ]
+            )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual(transcript["source"]["kind"], "youtube")
+            self.assertEqual(transcript["source"]["ref"], self.URL)
+            self.assertEqual(transcript["source"]["transcription_method"], "caller_supplied")
+            self.assertEqual(len(transcript["segments"]), 2)
+
+    def test_ref_label_overrides_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "t.json"
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=_fake_run_factory(captions=VTT)),
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-youtube",
+                        self.URL,
+                        "--ref",
+                        "keynote-2026",
+                        "--no-cache",
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(transcript["source"]["ref"], "keynote-2026")
+
+    def test_cache_hit_rewrites_ref_and_flags_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            outputs = []
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=_fake_run_factory(captions=VTT)),
+            ):
+                for label in ("first-talk", "second-talk"):
+                    out_path = Path(tmp) / f"{label}.json"
+                    code, _, err = self._run_main(
+                        [
+                            "from-youtube",
+                            self.URL,
+                            "--ref",
+                            label,
+                            "--cache-dir",
+                            str(cache_dir),
+                            "-o",
+                            str(out_path),
+                        ]
+                    )
+                    self.assertEqual(code, 0, err)
+                    outputs.append(json.loads(out_path.read_text(encoding="utf-8")))
+            first, second = outputs
+            mi.validate(first)
+            mi.validate(second)
+            self.assertNotIn("cache_hit", first)
+            self.assertEqual(first["source"]["ref"], "first-talk")
+            # Same caption content, different labels: one content_hash.
+            self.assertEqual(second["content_hash"], first["content_hash"])
+            self.assertIs(second["cache_hit"], True)
+            self.assertEqual(second["source"]["ref"], "second-talk")
+
+    def test_numeric_and_ref_args_validated(self):
+        for extra, needle in (
+            (["--timeout-seconds", "0"], "--timeout-seconds"),
+            (["--cache-ttl-seconds", "-1"], "--cache-ttl-seconds"),
+            (["--cache-max-files", "0"], "--cache-max-files"),
+            (["--ref", "   "], "--ref"),
+        ):
+            with self.subTest(extra=extra):
+                code, out, err = self._run_main(["from-youtube", self.URL, *extra, "--no-cache"])
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn("invalid_usage", err)
+                self.assertIn(needle, err)
+
+
+class DownloadCaptionsTest(unittest.TestCase):
+    def test_vtt_preferred_over_srt_and_first_parseable_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / "captions.en.srt").write_text(SRT, encoding="utf-8")
+            (work / "captions.ru.vtt").write_text(VTT, encoding="utf-8")
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(
+                    mi.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, "", ""),
+                ),
+            ):
+                segments = mi.download_captions(
+                    "https://example.invalid/v",
+                    binary="yt-dlp",
+                    timeout_seconds=5,
+                    work_dir=work,
+                )
+            # VTT wins over SRT even though the SRT sorts first by name.
+            self.assertEqual(segments[0]["text"], "Hello there.")
+            self.assertEqual(len(segments), 2)
+
+    def test_missing_binary_raises_named_error(self):
+        with patch.object(mi.shutil, "which", return_value=None):
+            with self.assertRaises(mi.YtDlpUnavailable) as ctx:
+                mi.download_captions(
+                    "https://example.invalid/v",
+                    binary="definitely-missing-ytdlp",
+                    timeout_seconds=5,
+                    work_dir=Path("/tmp"),
+                )
+        self.assertEqual(ctx.exception.code, "yt_dlp_unavailable")
+        self.assertEqual(ctx.exception.binary, "definitely-missing-ytdlp")
+
+
+class FromWebPageCliTest(unittest.TestCase):
+    URL = "https://videos.example.invalid/talks/keynote"
+
+    def _run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.object(sys, "stdout", out),
+            patch.object(sys, "stderr", err),
+        ):
+            code = mi.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_end_to_end_local_asr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            out_path = Path(tmp) / "transcript.json"
+            cache_dir = Path(tmp) / "cache"
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(list(argv))
+                return _fake_run_factory()(argv, **kwargs)
+
+            before = _ingest_workspace_dirs()
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=fake_run),
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-web-page",
+                        self.URL,
+                        "--whisper-model",
+                        str(model),
+                        "--cache-dir",
+                        str(cache_dir),
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual(transcript["source"]["kind"], "web_page")
+            self.assertEqual(transcript["source"]["ref"], self.URL)
+            self.assertEqual(transcript["source"]["transcription_method"], "local_asr")
+            self.assertEqual(transcript["source"]["transcription_trust"], "self_transcribed")
+            self.assertEqual(len(transcript["segments"]), 1)
+            self.assertEqual(stat.S_IMODE(out_path.stat().st_mode), 0o600)
+            cached = cache_dir / f"{transcript['content_hash'].split(':')[1]}.json"
+            self.assertTrue(cached.is_file())
+            # yt-dlp downloaded the media first, whisper-cli transcribed it.
+            ytdlp_argv, whisper_argv = calls
+            self.assertEqual(ytdlp_argv[0], "yt-dlp")
+            self.assertIn("-x", ytdlp_argv)
+            self.assertEqual(ytdlp_argv[-1], self.URL)
+            self.assertEqual(whisper_argv[0], "whisper-cli")
+            self.assertTrue(whisper_argv[whisper_argv.index("-f") + 1].endswith(".wav"))
+            self.assertEqual(_ingest_workspace_dirs(), before)
+
+    def test_requires_whisper_model(self):
+        code, out, err = self._run_main(["from-web-page", self.URL, "--no-cache"])
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("invalid_usage", err)
+        self.assertIn("--whisper-model", err)
+
+    def test_no_media_named_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            # yt-dlp exits 0 but produces no media file: named, never empty.
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=_fake_run_factory(media=None)),
+            ):
+                code, out, err = self._run_main(
+                    [
+                        "from-web-page",
+                        self.URL,
+                        "--whisper-model",
+                        str(model),
+                        "--no-cache",
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("no_media_found", err)
+
+    def test_unsupported_page_is_named_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            fake = _fake_run_factory(exit_code=1, stderr="ERROR: Unsupported URL")
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=fake),
+            ):
+                code, out, err = self._run_main(
+                    [
+                        "from-web-page",
+                        self.URL,
+                        "--whisper-model",
+                        str(model),
+                        "--no-cache",
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("external_tool_error", err)
+            self.assertIn("Unsupported URL", err)
+
+    def test_missing_binaries_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            # yt-dlp missing -> yt_dlp_unavailable before any subprocess.
+            with patch.object(mi.shutil, "which", side_effect=lambda name: None):
+                code, _, err = self._run_main(
+                    [
+                        "from-web-page",
+                        self.URL,
+                        "--whisper-model",
+                        str(model),
+                        "--no-cache",
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("yt_dlp_unavailable", err)
+            # whisper-cli missing -> asr_unavailable after the download.
+            with (
+                patch.object(
+                    mi.shutil,
+                    "which",
+                    side_effect=lambda name: "/usr/bin/yt-dlp" if name == "yt-dlp" else None,
+                ),
+                patch.object(mi.subprocess, "run", side_effect=_fake_run_factory()),
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-web-page",
+                        self.URL,
+                        "--whisper-model",
+                        str(model),
+                        "--no-cache",
+                    ]
+                )
+            self.assertEqual(code, 1)
+            self.assertIn("asr_unavailable", err)
+
+    def test_cache_hit_across_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            cache_dir = Path(tmp) / "cache"
+            outputs = []
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=_fake_run_factory()),
+            ):
+                for page in ("first", "second"):
+                    url = f"https://videos.example.invalid/{page}"
+                    out_path = Path(tmp) / f"{page}.json"
+                    code, _, err = self._run_main(
+                        [
+                            "from-web-page",
+                            url,
+                            "--whisper-model",
+                            str(model),
+                            "--cache-dir",
+                            str(cache_dir),
+                            "-o",
+                            str(out_path),
+                        ]
+                    )
+                    self.assertEqual(code, 0, err)
+                    outputs.append(json.loads(out_path.read_text(encoding="utf-8")))
+            first, second = outputs
+            mi.validate(first)
+            mi.validate(second)
+            self.assertNotIn("cache_hit", first)
+            # Identical spoken content from two pages shares one hash.
+            self.assertEqual(second["content_hash"], first["content_hash"])
+            self.assertIs(second["cache_hit"], True)
+            self.assertEqual(second["source"]["ref"], "https://videos.example.invalid/second")
+
+    def test_numeric_and_ref_args_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            for extra, needle in (
+                (["--timeout-seconds", "-3"], "--timeout-seconds"),
+                (["--cache-max-files", "0"], "--cache-max-files"),
+                (["--ref", "  "], "--ref"),
+            ):
+                with self.subTest(extra=extra):
+                    code, out, err = self._run_main(
+                        [
+                            "from-web-page",
+                            self.URL,
+                            "--whisper-model",
+                            str(model),
+                            *extra,
+                            "--no-cache",
+                        ]
+                    )
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out, "")
+                    self.assertIn("invalid_usage", err)
+                    self.assertIn(needle, err)
 
 
 if __name__ == "__main__":

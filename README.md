@@ -50,6 +50,7 @@ partners/
 tools/
   mcp_smoke.py                    local JSON-RPC smoke client
   fake_openai_server.py           deterministic loopback OpenAI-compatible endpoint
+  media_ingest.py                 offline transcript ingest for media-partner
 tests/                            stdlib unit tests
 ```
 
@@ -195,6 +196,61 @@ python3 tools/fake_openai_server.py --port 4143
 Then point `options.openai.base_url` at `http://127.0.0.1:4143/v1`. The `openai-compat-smoke` job in the Protocol Smoke workflow exercises the full pipeline - config load, backend call, response parsing - against this fake endpoint in CI without secrets.
 
 `model_used` verdict: the backend reports the response-side `model` field exactly as the endpoint returned it. Whether that value proves served-model identity is endpoint-dependent - a proxy may echo the request `model` back or omit the field entirely - so strict `code-reviewer` provenance on this backend requires verifying that the specific endpoint does not merely echo. The fail-closed `strict_model` behavior still applies: a missing or mismatched `model_used` is never treated as confirmed.
+
+## Media transcript ingest
+
+`tools/media_ingest.py` is an offline companion to `media-partner`. It is not part of the MCP server: it turns a media reference into a schema-validated `transcript.json` artifact on stdout or at `--output` (mode 0600), and callers pass that artifact to `media-partner` through the ordinary `context` or `files` arguments of the ask tools. The tool is stdlib-only; all external work is delegated to binaries through argv lists (never a shell), explicit timeouts and named errors.
+
+Prerequisites:
+
+- `yt-dlp` on `PATH` for `from-youtube` and `from-web-page` (override with `--ytdlp-binary` or `YT_DLP_BINARY`).
+- whisper.cpp `whisper-cli` on `PATH` plus a model file for every ASR path (`--whisper-binary`/`WHISPER_CPP_BINARY`, `--whisper-model`/`WHISPER_CPP_MODEL`). ASR runs locally only - no hosted transcription service is ever called.
+- `ffmpeg`, used by `yt-dlp -x --audio-format wav` to produce the WAV input whisper-cli expects. The captions path does not need it.
+
+Usage:
+
+```bash
+# Local media file, local whisper.cpp ASR
+python3 tools/media_ingest.py from-file meeting.mp4 \
+  --whisper-model /models/ggml-base.bin -o transcript.json
+
+# Caller-supplied transcript instead of ASR (plain text, SRT, VTT or loose JSON)
+python3 tools/media_ingest.py from-file meeting.mp4 \
+  --transcript-file meeting.srt -o transcript.json
+
+# YouTube: platform captions (default, platform_captions trust)
+python3 tools/media_ingest.py from-youtube 'https://www.youtube.com/watch?v=...' \
+  -o transcript.json
+
+# YouTube: download audio and transcribe locally (self_transcribed trust)
+python3 tools/media_ingest.py from-youtube 'https://www.youtube.com/watch?v=...' \
+  --asr --whisper-model /models/ggml-base.bin -o transcript.json
+
+# Generic web page: yt-dlp extracts the media, local ASR transcribes it
+python3 tools/media_ingest.py from-web-page 'https://videos.example.com/talks/keynote' \
+  --whisper-model /models/ggml-base.bin -o transcript.json
+
+# Re-validate an artifact and print its content_hash
+python3 tools/media_ingest.py validate transcript.json
+```
+
+Every transcript declares `source.transcription_method` and `source.transcription_trust`: `local_asr` and `caller_supplied` map to `self_transcribed`, while `yt_dlp_captions` maps to `platform_captions` - platform-authored or auto-generated captions of unknown quality, explicitly labeled so downstream consumers can weigh them accordingly. `--ref` overrides `source.ref` on every ingest subcommand; `from-file` defaults to the media basename so local paths never reach the artifact, and the URL subcommands default to the URL itself.
+
+Error contract (stderr `ERROR <code>: <message>`, exit 1):
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_usage` | Bad flags, missing files, missing `--whisper-model`, mutually exclusive `--asr`/`--transcript-file`. |
+| `yt_dlp_unavailable` | `yt-dlp` binary missing on `PATH` or not executable. |
+| `asr_unavailable` | whisper.cpp binary missing on `PATH` or not executable. |
+| `no_captions_available` | yt-dlp ran but produced no usable caption file; pass `--transcript-file` or retry with `--asr`. |
+| `no_media_found` | yt-dlp ran but the page yielded no downloadable media. |
+| `external_tool_error` | External binary timed out or exited non-zero (stderr tail in the hint). |
+| `transcript_format_invalid` | Caller-supplied transcript text matched no supported format. |
+| `transcript_schema_invalid` / `unsupported_schema_version` | Artifact failed the schema contract on `validate` or a cache write. |
+| `output_write_failed` | `--output` path not writable. |
+
+Cache policy: transcripts are stored in a bounded cache (`--cache-dir`, default `.cache/media-ingest`) keyed only by `content_hash` - a sha256 over canonicalized segments, never by URL or file path. Entries are 0600 files with a 6-hour TTL (`--cache-ttl-seconds`) and a 256-file bound (`--cache-max-files`); `--no-cache` bypasses it. A hit re-emits the stored transcript with the current input's `source.ref` and a `cache_hit: true` flag. The cache stores transcripts only - never partner questions or answers - and corrupt or tampered entries count as misses.
 
 ## Harness and skills
 

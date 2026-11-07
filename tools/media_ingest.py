@@ -8,7 +8,7 @@ media reference into a schema-validated ``transcript.json`` artifact
 that callers pass to ``media-partner`` through the ordinary ``context``
 or ``files`` arguments of the ask tools.
 
-Stage 1-3 scope implemented here:
+Stage 1-6 scope implemented here:
 
 - the ``transcript.json`` schema contract and ``validate()``;
 - ``content_hash`` - a deterministic sha256 over canonical JSON of the
@@ -31,10 +31,25 @@ Stage 1-3 scope implemented here:
   never serialized;
 - cache-hit provenance: a hit re-emits the stored transcript with the
   current input's ``source.ref`` and a ``cache_hit: true`` flag, so the
-  artifact never carries another file's provenance.
+  artifact never carries another file's provenance;
+- ``from-youtube``: the default mode pulls platform captions through
+  ``yt-dlp`` (``--write-sub --write-auto-sub --skip-download``) and
+  normalizes the downloaded VTT/SRT file - ``yt_dlp_captions`` method
+  with the lower ``platform_captions`` trust; ``--asr`` instead
+  downloads the audio and runs the same local whisper.cpp path for
+  ``local_asr``/``self_transcribed``. A missing binary is named
+  ``YtDlpUnavailable`` and a video without usable captions raises
+  ``NoCaptionsAvailable``;
+- ``from-web-page``: ``yt-dlp`` downloads the page's media through its
+  generic extractor into a temp dir and the local whisper.cpp path
+  transcribes it - ``web_page``/``local_asr``. A page that yields no
+  downloadable media fails loudly as ``NoMediaFound``.
 
-``from-youtube`` and ``from-web-page`` are reserved subcommands for
-later stages and exit with a named not-implemented error.
+Every remote fetch and transcription runs inside a
+``tempfile.TemporaryDirectory`` workspace, so downloaded media and
+intermediate files never outlive the command. ``source.ref`` for the
+URL-based subcommands stores the URL itself (already remote-safe), or a
+caller-supplied ``--ref`` label.
 """
 
 from __future__ import annotations
@@ -55,7 +70,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 1
-GENERATOR_VERSION = "media_ingest/0.1.0"
+GENERATOR_VERSION = "media_ingest/0.2.0"
 
 SOURCE_KINDS = ("youtube", "web_page", "local_file")
 TRANSCRIPTION_METHODS = ("local_asr", "yt_dlp_captions", "caller_supplied")
@@ -73,6 +88,8 @@ DEFAULT_BINARY_TIMEOUT_SECONDS = 600
 DEFAULT_WHISPER_BINARY = "whisper-cli"
 ENV_WHISPER_BINARY = "WHISPER_CPP_BINARY"
 ENV_WHISPER_MODEL = "WHISPER_CPP_MODEL"
+DEFAULT_YTDLP_BINARY = "yt-dlp"
+ENV_YTDLP_BINARY = "YT_DLP_BINARY"
 
 _HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CACHE_STEM_RE = re.compile(r"[0-9a-fA-F]{64}")
@@ -173,8 +190,21 @@ class AsrUnavailable(ExternalToolError):
         )
 
 
+class YtDlpUnavailable(ExternalToolError):
+    """The yt-dlp binary required for remote ingest is unavailable."""
+
+    code = "yt_dlp_unavailable"
+
+    def __init__(self, binary: str, hint: str = "") -> None:
+        super().__init__(
+            binary,
+            f"yt-dlp binary not available: {binary}",
+            hint or "install yt-dlp so the binary is on PATH",
+        )
+
+
 class NoCaptionsAvailable(ExternalToolError):
-    """Reserved for the YouTube captions path of a later stage."""
+    """yt-dlp ran cleanly but produced no usable caption file."""
 
     code = "no_captions_available"
 
@@ -182,7 +212,21 @@ class NoCaptionsAvailable(ExternalToolError):
         self,
         binary: str = "yt-dlp",
         message: str = "no captions available for this source",
-        hint: str = "pass --transcript-file or run local ASR on the downloaded audio",
+        hint: str = "pass --transcript-file or retry with --asr",
+    ) -> None:
+        super().__init__(binary, message, hint)
+
+
+class NoMediaFound(ExternalToolError):
+    """yt-dlp ran cleanly but the page yielded no downloadable media."""
+
+    code = "no_media_found"
+
+    def __init__(
+        self,
+        binary: str = "yt-dlp",
+        message: str = "no downloadable media found at this URL",
+        hint: str = "check that the page hosts a video yt-dlp can extract",
     ) -> None:
         super().__init__(binary, message, hint)
 
@@ -756,6 +800,91 @@ def transcribe_local(
     return _segments_from_whisper(payload, binary)
 
 
+# --- remote ingest via yt-dlp -------------------------------------------------
+
+
+def download_media(
+    url: str,
+    *,
+    binary: str,
+    timeout_seconds: int,
+    work_dir: Path,
+) -> Path:
+    """Download the media behind ``url`` as WAV into ``work_dir``.
+
+    ``yt-dlp`` resolves the extractor (YouTube or a generic page) and
+    ``-x --audio-format wav`` leaves a deterministic ``media.wav`` that
+    the stock whisper.cpp CLI accepts; the audio conversion itself is
+    delegated to ffmpeg by yt-dlp. A clean exit without an output file
+    means the extractor found no media and is named ``NoMediaFound`` -
+    ingest never degrades to an empty transcript.
+    """
+    if shutil.which(binary) is None:
+        raise YtDlpUnavailable(binary)
+    media_base = Path(work_dir) / "media"
+    argv = [
+        binary,
+        "--no-playlist",
+        "-x",
+        "--audio-format",
+        "wav",
+        "-o",
+        str(media_base),
+        url,
+    ]
+    run_external(argv, timeout_seconds=timeout_seconds, missing_error=YtDlpUnavailable(binary))
+    media = media_base.with_suffix(".wav")
+    if not media.is_file():
+        raise NoMediaFound(binary)
+    return media
+
+
+def download_captions(
+    url: str,
+    *,
+    binary: str,
+    timeout_seconds: int,
+    work_dir: Path,
+    sub_langs: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch platform captions for ``url`` and normalize them to segments.
+
+    Runs ``yt-dlp --write-sub --write-auto-sub --skip-download`` so both
+    manual and automatic caption tracks are candidates; VTT files are
+    preferred over SRT and candidates are tried in sorted filename
+    order, the first file that normalizes wins. When nothing usable is
+    produced - no caption files at all, or files the normalizer cannot
+    read - ``NoCaptionsAvailable`` names the failure so the caller can
+    fall back to ``--transcript-file`` or ``--asr``.
+    """
+    if shutil.which(binary) is None:
+        raise YtDlpUnavailable(binary)
+    base = Path(work_dir) / "captions"
+    argv = [
+        binary,
+        "--no-playlist",
+        "--write-sub",
+        "--write-auto-sub",
+        "--skip-download",
+        "--sub-format",
+        "vtt/srt",
+    ]
+    if sub_langs:
+        argv += ["--sub-langs", sub_langs]
+    argv += ["-o", str(base), url]
+    run_external(argv, timeout_seconds=timeout_seconds, missing_error=YtDlpUnavailable(binary))
+    candidates = sorted(base.parent.glob(f"{base.name}.*.vtt"))
+    candidates += sorted(base.parent.glob(f"{base.name}.*.srt"))
+    for path in candidates:
+        try:
+            segments = normalize_transcript(path.read_text(encoding="utf-8"))
+        except (OSError, TranscriptFormatError):
+            continue
+        if segments:
+            return segments
+    raise NoCaptionsAvailable(binary)
+
+
 # --- CLI --------------------------------------------------------------------
 
 
@@ -789,6 +918,43 @@ def _add_output_and_cache_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_whisper_args(parser: argparse.ArgumentParser, model_help: str) -> None:
+    parser.add_argument(
+        "--whisper-binary",
+        default=os.environ.get(ENV_WHISPER_BINARY, DEFAULT_WHISPER_BINARY),
+        help=f"whisper.cpp CLI binary (env {ENV_WHISPER_BINARY}; default whisper-cli)",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default=os.environ.get(ENV_WHISPER_MODEL, ""),
+        help=model_help,
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=DEFAULT_BINARY_TIMEOUT_SECONDS,
+        help=(
+            "external binary timeout, a positive integer "
+            f"(default {DEFAULT_BINARY_TIMEOUT_SECONDS})"
+        ),
+    )
+
+
+def _add_ytdlp_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ytdlp-binary",
+        default=os.environ.get(ENV_YTDLP_BINARY, DEFAULT_YTDLP_BINARY),
+        help=f"yt-dlp binary (env {ENV_YTDLP_BINARY}; default yt-dlp)",
+    )
+
+
+def _add_ref_arg(parser: argparse.ArgumentParser, default_label: str) -> None:
+    parser.add_argument(
+        "--ref",
+        help=f"label stored as source.ref; defaults to {default_label}",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="media_ingest",
@@ -811,49 +977,63 @@ def _build_parser() -> argparse.ArgumentParser:
             "skips ASR and marks transcription_method caller_supplied"
         ),
     )
-    local.add_argument(
-        "--ref",
-        help=(
-            "label stored as source.ref; defaults to the media basename "
-            "(the resolved local path is never written into the artifact - "
-            "it may reach a remote partner)"
-        ),
+    _add_ref_arg(
+        local,
+        "the media basename (the resolved local path is never written "
+        "into the artifact - it may reach a remote partner)",
     )
-    local.add_argument(
-        "--whisper-binary",
-        default=os.environ.get(ENV_WHISPER_BINARY, DEFAULT_WHISPER_BINARY),
-        help=f"whisper.cpp CLI binary (env {ENV_WHISPER_BINARY}; default whisper-cli)",
-    )
-    local.add_argument(
-        "--whisper-model",
-        default=os.environ.get(ENV_WHISPER_MODEL, ""),
-        help=(
-            f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required without --transcript-file"
-        ),
-    )
-    local.add_argument(
-        "--timeout-seconds",
-        type=int,
-        default=DEFAULT_BINARY_TIMEOUT_SECONDS,
-        help=(
-            "external binary timeout, a positive integer "
-            f"(default {DEFAULT_BINARY_TIMEOUT_SECONDS})"
-        ),
+    _add_whisper_args(
+        local,
+        f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required without --transcript-file",
     )
     _add_output_and_cache_args(local)
 
     youtube = sub.add_parser(
         "from-youtube",
-        help="ingest a YouTube URL (reserved for a later stage)",
+        help="ingest a YouTube URL via platform captions or local ASR",
     )
-    youtube.add_argument("url")
+    youtube.add_argument("url", help="YouTube video URL")
+    youtube.add_argument(
+        "--asr",
+        action="store_true",
+        help=(
+            "skip captions: download the audio with yt-dlp and transcribe it "
+            "with local whisper.cpp ASR (self_transcribed trust)"
+        ),
+    )
+    youtube.add_argument(
+        "--transcript-file",
+        help=(
+            "caller-supplied transcript (plain text, SRT, VTT or loose JSON); "
+            "skips yt-dlp and marks transcription_method caller_supplied"
+        ),
+    )
+    youtube.add_argument(
+        "--sub-langs",
+        help=(
+            "yt-dlp caption language filter for the captions mode "
+            "(for example 'en.*'); default all available caption tracks"
+        ),
+    )
+    _add_ref_arg(youtube, "the URL")
+    _add_ytdlp_args(youtube)
+    _add_whisper_args(
+        youtube,
+        f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required with --asr",
+    )
     _add_output_and_cache_args(youtube)
 
     web = sub.add_parser(
         "from-web-page",
-        help="ingest video hosted on a generic web page (reserved for a later stage)",
+        help="ingest media hosted on a generic web page via yt-dlp plus local ASR",
     )
-    web.add_argument("url")
+    web.add_argument("url", help="web page URL hosting a video yt-dlp can extract")
+    _add_ref_arg(web, "the URL")
+    _add_ytdlp_args(web)
+    _add_whisper_args(
+        web,
+        f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required - ASR is the only mode",
+    )
     _add_output_and_cache_args(web)
 
     check = sub.add_parser(
@@ -902,40 +1082,97 @@ def _store_or_reuse(cache: TranscriptCache | None, transcript: dict[str, Any]) -
     return transcript
 
 
-def _cmd_from_file(args: argparse.Namespace) -> int:
+def _validate_numeric_args(args: argparse.Namespace) -> None:
+    """Shared numeric/cache validation for every ingest subcommand."""
     if args.timeout_seconds <= 0:
         raise UsageError("--timeout-seconds must be a positive integer")
     if args.cache_ttl_seconds < 0:
         raise UsageError("--cache-ttl-seconds must be >= 0")
     if args.cache_max_files < 1:
         raise UsageError("--cache-max-files must be a positive integer")
+
+
+def _resolve_ref_label(args: argparse.Namespace) -> str:
     ref = args.ref.strip() if args.ref is not None else ""
     if args.ref is not None and not ref:
         raise UsageError("--ref must be a non-empty label")
+    return ref
+
+
+def _require_whisper_model(args: argparse.Namespace, alternative: str) -> str:
+    if not args.whisper_model:
+        raise UsageError(
+            "local ASR needs a whisper.cpp model file",
+            f"pass --whisper-model or set {ENV_WHISPER_MODEL}{alternative}",
+        )
+    if not Path(args.whisper_model).expanduser().is_file():
+        raise UsageError(f"whisper model file not found: {args.whisper_model}")
+    return args.whisper_model
+
+
+def _resolve_url(args: argparse.Namespace) -> str:
+    url = args.url.strip()
+    if not url:
+        raise UsageError("url must be a non-empty string")
+    return url
+
+
+def _read_caller_transcript(transcript_file: str) -> list[dict[str, Any]]:
+    transcript_path = Path(transcript_file).expanduser()
+    try:
+        raw = transcript_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise UsageError(f"cannot read transcript file: {e}") from e
+    return normalize_transcript(raw)
+
+
+def _resolve_cache(args: argparse.Namespace) -> TranscriptCache | None:
+    if args.no_cache:
+        return None
+    return TranscriptCache(
+        args.cache_dir,
+        ttl_seconds=args.cache_ttl_seconds,
+        max_files=args.cache_max_files,
+    )
+
+
+def _transcribe_via_download(
+    url: str, args: argparse.Namespace, model_path: str
+) -> list[dict[str, Any]]:
+    """yt-dlp media download plus local whisper.cpp ASR in one workspace."""
+    with tempfile.TemporaryDirectory(prefix="media-ingest-") as work_dir:
+        work = Path(work_dir)
+        media = download_media(
+            url,
+            binary=args.ytdlp_binary,
+            timeout_seconds=args.timeout_seconds,
+            work_dir=work,
+        )
+        return transcribe_local(
+            media,
+            binary=args.whisper_binary,
+            model_path=model_path,
+            timeout_seconds=args.timeout_seconds,
+            work_dir=work,
+        )
+
+
+def _cmd_from_file(args: argparse.Namespace) -> int:
+    _validate_numeric_args(args)
+    ref = _resolve_ref_label(args)
     media = Path(args.media_path).expanduser()
     if not media.is_file():
         raise UsageError(f"media file not found: {media}")
     if args.transcript_file:
-        transcript_path = Path(args.transcript_file).expanduser()
-        try:
-            raw = transcript_path.read_text(encoding="utf-8")
-        except OSError as e:
-            raise UsageError(f"cannot read transcript file: {e}") from e
-        segments = normalize_transcript(raw)
+        segments = _read_caller_transcript(args.transcript_file)
         method = "caller_supplied"
     else:
-        if not args.whisper_model:
-            raise UsageError(
-                "local ASR needs a whisper.cpp model file",
-                f"pass --whisper-model or set {ENV_WHISPER_MODEL}, or provide --transcript-file",
-            )
-        if not Path(args.whisper_model).expanduser().is_file():
-            raise UsageError(f"whisper model file not found: {args.whisper_model}")
+        model = _require_whisper_model(args, ", or provide --transcript-file")
         with tempfile.TemporaryDirectory(prefix="media-ingest-") as work_dir:
             segments = transcribe_local(
                 media,
                 binary=args.whisper_binary,
-                model_path=args.whisper_model,
+                model_path=model,
                 timeout_seconds=args.timeout_seconds,
                 work_dir=Path(work_dir),
             )
@@ -946,16 +1183,52 @@ def _cmd_from_file(args: argparse.Namespace) -> int:
     transcript = build_transcript(
         kind="local_file", ref=ref or media.name, method=method, segments=segments
     )
-    cache = (
-        None
-        if args.no_cache
-        else TranscriptCache(
-            args.cache_dir,
-            ttl_seconds=args.cache_ttl_seconds,
-            max_files=args.cache_max_files,
+    _emit(_store_or_reuse(_resolve_cache(args), transcript), args.output)
+    return 0
+
+
+def _cmd_from_youtube(args: argparse.Namespace) -> int:
+    _validate_numeric_args(args)
+    ref = _resolve_ref_label(args)
+    if args.asr and args.transcript_file:
+        raise UsageError("--asr and --transcript-file are mutually exclusive")
+    url = _resolve_url(args)
+    if args.transcript_file:
+        segments = _read_caller_transcript(args.transcript_file)
+        method = "caller_supplied"
+    elif args.asr:
+        model = _require_whisper_model(
+            args, ", provide --transcript-file, or drop --asr to use captions"
         )
+        segments = _transcribe_via_download(url, args, model)
+        method = "local_asr"
+    else:
+        with tempfile.TemporaryDirectory(prefix="media-ingest-") as work_dir:
+            segments = download_captions(
+                url,
+                binary=args.ytdlp_binary,
+                timeout_seconds=args.timeout_seconds,
+                work_dir=Path(work_dir),
+                sub_langs=args.sub_langs,
+            )
+        method = "yt_dlp_captions"
+    # source.ref is the URL itself (already remote-safe) or the --ref
+    # label; no local path ever reaches the artifact.
+    transcript = build_transcript(kind="youtube", ref=ref or url, method=method, segments=segments)
+    _emit(_store_or_reuse(_resolve_cache(args), transcript), args.output)
+    return 0
+
+
+def _cmd_from_web_page(args: argparse.Namespace) -> int:
+    _validate_numeric_args(args)
+    ref = _resolve_ref_label(args)
+    url = _resolve_url(args)
+    model = _require_whisper_model(args, "")
+    segments = _transcribe_via_download(url, args, model)
+    transcript = build_transcript(
+        kind="web_page", ref=ref or url, method="local_asr", segments=segments
     )
-    _emit(_store_or_reuse(cache, transcript), args.output)
+    _emit(_store_or_reuse(_resolve_cache(args), transcript), args.output)
     return 0
 
 
@@ -970,21 +1243,18 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_reserved(command: str) -> int:
-    raise UsageError(
-        f"{command} is not implemented in {GENERATOR_VERSION}",
-        "planned for a later stage of issue #37; use from-file or --transcript-file",
-    )
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "from-file":
             return _cmd_from_file(args)
+        if args.command == "from-youtube":
+            return _cmd_from_youtube(args)
+        if args.command == "from-web-page":
+            return _cmd_from_web_page(args)
         if args.command == "validate":
             return _cmd_validate(args)
-        return _cmd_reserved(args.command)
+        raise UsageError(f"unknown command: {args.command}")
     except IngestError as e:
         print(e.to_text(), file=sys.stderr)
         return 1
