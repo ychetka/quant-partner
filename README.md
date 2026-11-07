@@ -240,13 +240,13 @@ Error contract (stderr `ERROR <code>: <message>`, exit 1):
 
 | Code | Meaning |
 | --- | --- |
-| `invalid_usage` | Bad flags, missing files, missing `--whisper-model`, mutually exclusive `--asr`/`--transcript-file`. |
+| `invalid_usage` | Bad flags, flags inapplicable to the selected mode (for example `--sub-langs` with `--asr`, or binary overrides with `--transcript-file`), missing files, missing `--whisper-model`, mutually exclusive `--asr`/`--transcript-file`. |
 | `yt_dlp_unavailable` | `yt-dlp` binary missing on `PATH` or not executable. |
 | `asr_unavailable` | whisper.cpp binary missing on `PATH` or not executable. |
 | `no_captions_available` | yt-dlp ran but produced no usable caption file; pass `--transcript-file` or retry with `--asr`. |
 | `no_media_found` | yt-dlp ran but the page yielded no downloadable media. |
 | `external_tool_error` | External binary timed out or exited non-zero (stderr tail in the hint). |
-| `transcript_format_invalid` | Caller-supplied transcript text matched no supported format. |
+| `transcript_format_invalid` | Caller-supplied transcript text matched no supported format, or the input file is not valid UTF-8. |
 | `transcript_schema_invalid` / `unsupported_schema_version` | Artifact failed the schema contract on `validate` or a cache write. |
 | `output_write_failed` | `--output` path not writable. |
 

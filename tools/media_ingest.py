@@ -14,7 +14,15 @@ Stage 1-6 scope implemented here:
 - ``content_hash`` - a deterministic sha256 over canonical JSON of the
   normalized segments (stable key order, fixed-precision floats), so
   whitespace and key-ordering differences never miss the cache;
-- the caller-transcript normalizer (plain text, SRT, VTT, loose JSON);
+- the caller-transcript normalizer (plain text, SRT, VTT, loose JSON).
+  All transcript input must be UTF-8 text: a Latin-1/Windows-1252 file
+  fails as ``transcript_format_invalid`` with a conversion hint instead
+  of a raw ``UnicodeDecodeError``. The SRT/VTT path additionally strips
+  simple inline markup (``<c>``, ``</i>``, inline timestamp tags such
+  as ``<00:00:01.234>``) and drops exact-duplicate cues, a common
+  artifact of rolling auto-caption exports. Residual limitation:
+  rolling-caption fragments that overlap without being exact
+  duplicates are kept as-is;
 - ``TranscriptCache`` - a bounded store keyed ONLY by content_hash
   (never by URI or path), mirroring the atomic-write / TTL / max-files
   pattern of ``partners/review/cache.py`` ``ArtifactCache``. That cache
@@ -101,6 +109,12 @@ _CUE_LINE_RE = re.compile(
     r"(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})"
 )
 _TIMESTAMP_RE = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,6})$")
+# Simple inline markup found in SRT/VTT cue text: named tags (``<c>``,
+# ``</i>``, ``<v Speaker>``, ``<c.colorE5E5E5>``) and VTT inline
+# timestamp tags such as ``<00:00:01.234>`` that platform auto-captions
+# embed inside cue text. A ``<`` that opens neither form (for example
+# ``a < b``) is left untouched.
+_INLINE_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>|<\d{1,3}:\d{2}(?::\d{2})?[.,]\d{1,3}>")
 
 _TRANSCRIPT_KEYS = {
     "source",
@@ -513,8 +527,16 @@ def _segments_from_json(text: str) -> list[dict[str, Any]] | None:
 
 
 def _segments_from_cues(text: str) -> list[dict[str, Any]]:
-    """Parse SRT/VTT cue blocks; blocks without a ``-->`` line are skipped."""
+    """Parse SRT/VTT cue blocks; blocks without a ``-->`` line are skipped.
+
+    Cue text is stripped of simple inline markup (``<c>``, ``</i>``,
+    inline timestamp tags) that platform auto-captions embed, and
+    exact-duplicate cues - an artifact of rolling auto-caption exports -
+    are dropped after normalization, keeping first-seen order.
+    Overlapping fragments that are not exact duplicates are kept.
+    """
     segments = []
+    seen = set()
     for block in re.split(r"\n\s*\n", text):
         lines = block.strip().splitlines()
         cue_index = next(
@@ -527,9 +549,13 @@ def _segments_from_cues(text: str) -> list[dict[str, Any]]:
         if match is None:  # unreachable: cue_index came from the same regex
             continue
         t0, t1 = _cue_times(match)
-        body = _normalize_text(" ".join(lines[cue_index + 1 :]))
+        body = _normalize_text(_INLINE_TAG_RE.sub("", " ".join(lines[cue_index + 1 :])))
         if not body:
             continue
+        key = (t0, t1, body)
+        if key in seen:
+            continue
+        seen.add(key)
         segments.append({"t0": t0, "t1": t1, "speaker": None, "text": body})
     return segments
 
@@ -563,6 +589,24 @@ def normalize_transcript(raw: str) -> list[dict[str, Any]]:
             raise TranscriptFormatError("input looks like SRT/VTT but no usable cues were found")
         return segments
     return _segments_from_plain(text)
+
+
+def _read_utf8_text(path: Path) -> str:
+    """Read ``path`` as strict UTF-8 text.
+
+    Transcript and caption files are UTF-8 by contract: a decode
+    failure raises ``TranscriptFormatError`` with a conversion hint
+    instead of leaking a raw ``UnicodeDecodeError`` (which is a
+    ``ValueError``, so ``except OSError`` clauses never catch it).
+    Plain I/O failures still propagate as ``OSError``.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise TranscriptFormatError(
+            f"file is not valid UTF-8: {path}",
+            "convert it to UTF-8 first (for example with iconv) or pass a UTF-8 file",
+        ) from e
 
 
 # --- bounded transcript cache ----------------------------------------------
@@ -620,7 +664,8 @@ class TranscriptCache:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            # An unreadable or non-UTF-8 entry is corruption: a miss.
             _unlink(path)
             return None
         try:
@@ -875,13 +920,27 @@ def download_captions(
     run_external(argv, timeout_seconds=timeout_seconds, missing_error=YtDlpUnavailable(binary))
     candidates = sorted(base.parent.glob(f"{base.name}.*.vtt"))
     candidates += sorted(base.parent.glob(f"{base.name}.*.srt"))
+    decode_error: TranscriptFormatError | None = None
     for path in candidates:
         try:
-            segments = normalize_transcript(path.read_text(encoding="utf-8"))
-        except (OSError, TranscriptFormatError):
+            raw = _read_utf8_text(path)
+        except TranscriptFormatError as e:
+            # Non-UTF-8 caption file (for example Latin-1): keep scanning
+            # - a later candidate may still normalize - but remember the
+            # named error so a fully unreadable set is reported as a
+            # UTF-8 problem rather than a generic NoCaptionsAvailable.
+            decode_error = decode_error or e
+            continue
+        except OSError:
+            continue
+        try:
+            segments = normalize_transcript(raw)
+        except TranscriptFormatError:
             continue
         if segments:
             return segments
+    if decode_error is not None:
+        raise decode_error
     raise NoCaptionsAvailable(binary)
 
 
@@ -918,16 +977,25 @@ def _add_output_and_cache_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_whisper_args(parser: argparse.ArgumentParser, model_help: str) -> None:
+def _add_whisper_args(
+    parser: argparse.ArgumentParser,
+    model_help: str,
+    rejected_with: str | None = None,
+) -> None:
+    # SUPPRESS defaults keep an explicitly-passed flag distinguishable
+    # from an unset one: _reject_inapplicable_flags can then reject a
+    # flag the selected mode never uses instead of silently ignoring
+    # it. _resolve_binary_args applies env/default fallback afterwards.
+    note = f"; rejected when {rejected_with} is used" if rejected_with else ""
     parser.add_argument(
         "--whisper-binary",
-        default=os.environ.get(ENV_WHISPER_BINARY, DEFAULT_WHISPER_BINARY),
-        help=f"whisper.cpp CLI binary (env {ENV_WHISPER_BINARY}; default whisper-cli)",
+        default=argparse.SUPPRESS,
+        help=(f"whisper.cpp CLI binary (env {ENV_WHISPER_BINARY}; default whisper-cli){note}"),
     )
     parser.add_argument(
         "--whisper-model",
-        default=os.environ.get(ENV_WHISPER_MODEL, ""),
-        help=model_help,
+        default=argparse.SUPPRESS,
+        help=model_help + note,
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -940,11 +1008,12 @@ def _add_whisper_args(parser: argparse.ArgumentParser, model_help: str) -> None:
     )
 
 
-def _add_ytdlp_args(parser: argparse.ArgumentParser) -> None:
+def _add_ytdlp_args(parser: argparse.ArgumentParser, rejected_with: str | None = None) -> None:
+    note = f"; rejected when {rejected_with} is used" if rejected_with else ""
     parser.add_argument(
         "--ytdlp-binary",
-        default=os.environ.get(ENV_YTDLP_BINARY, DEFAULT_YTDLP_BINARY),
-        help=f"yt-dlp binary (env {ENV_YTDLP_BINARY}; default yt-dlp)",
+        default=argparse.SUPPRESS,
+        help=f"yt-dlp binary (env {ENV_YTDLP_BINARY}; default yt-dlp){note}",
     )
 
 
@@ -974,7 +1043,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--transcript-file",
         help=(
             "caller-supplied transcript (plain text, SRT, VTT or loose JSON); "
-            "skips ASR and marks transcription_method caller_supplied"
+            "skips ASR and marks transcription_method caller_supplied; "
+            "--whisper-* flags are rejected in this mode"
         ),
     )
     _add_ref_arg(
@@ -984,7 +1054,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_whisper_args(
         local,
-        f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required without --transcript-file",
+        f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required for ASR",
+        rejected_with="--transcript-file",
     )
     _add_output_and_cache_args(local)
 
@@ -1005,21 +1076,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--transcript-file",
         help=(
             "caller-supplied transcript (plain text, SRT, VTT or loose JSON); "
-            "skips yt-dlp and marks transcription_method caller_supplied"
+            "skips yt-dlp and marks transcription_method caller_supplied; "
+            "--sub-langs and binary-override flags are rejected in this mode"
         ),
     )
     youtube.add_argument(
         "--sub-langs",
+        default=argparse.SUPPRESS,
         help=(
             "yt-dlp caption language filter for the captions mode "
-            "(for example 'en.*'); default all available caption tracks"
+            "(for example 'en.*'); rejected when --asr or "
+            "--transcript-file is used; default all available caption tracks"
         ),
     )
     _add_ref_arg(youtube, "the URL")
-    _add_ytdlp_args(youtube)
+    _add_ytdlp_args(youtube, rejected_with="--transcript-file")
     _add_whisper_args(
         youtube,
         f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required with --asr",
+        rejected_with="--transcript-file",
     )
     _add_output_and_cache_args(youtube)
 
@@ -1051,6 +1126,10 @@ def _emit(transcript: dict[str, Any], output: str | None) -> None:
         try:
             fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                # The O_CREAT mode applies only when the file is new;
+                # an existing file keeps its mode across O_TRUNC, so
+                # force 0600 on the open descriptor unconditionally.
+                os.fchmod(handle.fileno(), 0o600)
                 handle.write(text)
         except OSError as e:
             raise OutputWriteError(
@@ -1120,10 +1199,49 @@ def _resolve_url(args: argparse.Namespace) -> str:
 def _read_caller_transcript(transcript_file: str) -> list[dict[str, Any]]:
     transcript_path = Path(transcript_file).expanduser()
     try:
-        raw = transcript_path.read_text(encoding="utf-8")
+        raw = _read_utf8_text(transcript_path)
     except OSError as e:
         raise UsageError(f"cannot read transcript file: {e}") from e
     return normalize_transcript(raw)
+
+
+# Mode-inapplicable flags: these destinations default to
+# ``argparse.SUPPRESS``, so a dest present on the parsed namespace means
+# the caller passed the flag explicitly. Silently ignoring it would hide
+# a mode mistake, hence the UsageError rejection. Environment variables
+# are not flags: they keep filling defaults and are never rejected.
+_BINARY_FLAG_DESTS = {
+    "whisper_binary": "--whisper-binary",
+    "whisper_model": "--whisper-model",
+    "ytdlp_binary": "--ytdlp-binary",
+}
+_CAPTION_FLAG_DESTS = {"sub_langs": "--sub-langs"}
+
+
+def _reject_inapplicable_flags(args: argparse.Namespace, flags: dict[str, str], mode: str) -> None:
+    """Reject explicitly-passed flags that the selected mode never uses."""
+    used = sorted(flag for dest, flag in flags.items() if dest in vars(args))
+    if used:
+        raise UsageError(
+            f"{', '.join(used)} not applicable with {mode}",
+            "drop the flag or choose the mode it applies to",
+        )
+
+
+def _resolve_binary_args(args: argparse.Namespace) -> None:
+    """Fill binary/model values after the mode-applicability checks.
+
+    CLI flags win; environment variables and built-in defaults fill the
+    rest, preserving the former argparse precedence.
+    """
+    if getattr(args, "whisper_binary", None) is None:
+        args.whisper_binary = os.environ.get(ENV_WHISPER_BINARY, DEFAULT_WHISPER_BINARY)
+    if getattr(args, "whisper_model", None) is None:
+        args.whisper_model = os.environ.get(ENV_WHISPER_MODEL, "")
+    if getattr(args, "ytdlp_binary", None) is None:
+        args.ytdlp_binary = os.environ.get(ENV_YTDLP_BINARY, DEFAULT_YTDLP_BINARY)
+    if getattr(args, "sub_langs", None) is None:
+        args.sub_langs = None
 
 
 def _resolve_cache(args: argparse.Namespace) -> TranscriptCache | None:
@@ -1139,7 +1257,17 @@ def _resolve_cache(args: argparse.Namespace) -> TranscriptCache | None:
 def _transcribe_via_download(
     url: str, args: argparse.Namespace, model_path: str
 ) -> list[dict[str, Any]]:
-    """yt-dlp media download plus local whisper.cpp ASR in one workspace."""
+    """yt-dlp media download plus local whisper.cpp ASR in one workspace.
+
+    Both required binaries are checked up front, so a missing tool fails
+    with its named error immediately instead of surfacing only after a
+    potentially long download. The per-call ``shutil.which`` checks stay
+    as defense in depth.
+    """
+    if shutil.which(args.ytdlp_binary) is None:
+        raise YtDlpUnavailable(args.ytdlp_binary)
+    if shutil.which(args.whisper_binary) is None:
+        raise AsrUnavailable(args.whisper_binary)
     with tempfile.TemporaryDirectory(prefix="media-ingest-") as work_dir:
         work = Path(work_dir)
         media = download_media(
@@ -1163,6 +1291,9 @@ def _cmd_from_file(args: argparse.Namespace) -> int:
     media = Path(args.media_path).expanduser()
     if not media.is_file():
         raise UsageError(f"media file not found: {media}")
+    if args.transcript_file:
+        _reject_inapplicable_flags(args, _BINARY_FLAG_DESTS, "--transcript-file")
+    _resolve_binary_args(args)
     if args.transcript_file:
         segments = _read_caller_transcript(args.transcript_file)
         method = "caller_supplied"
@@ -1192,6 +1323,13 @@ def _cmd_from_youtube(args: argparse.Namespace) -> int:
     ref = _resolve_ref_label(args)
     if args.asr and args.transcript_file:
         raise UsageError("--asr and --transcript-file are mutually exclusive")
+    if args.transcript_file:
+        _reject_inapplicable_flags(
+            args, {**_BINARY_FLAG_DESTS, **_CAPTION_FLAG_DESTS}, "--transcript-file"
+        )
+    elif args.asr:
+        _reject_inapplicable_flags(args, _CAPTION_FLAG_DESTS, "--asr")
+    _resolve_binary_args(args)
     url = _resolve_url(args)
     if args.transcript_file:
         segments = _read_caller_transcript(args.transcript_file)
@@ -1223,6 +1361,7 @@ def _cmd_from_web_page(args: argparse.Namespace) -> int:
     _validate_numeric_args(args)
     ref = _resolve_ref_label(args)
     url = _resolve_url(args)
+    _resolve_binary_args(args)
     model = _require_whisper_model(args, "")
     segments = _transcribe_via_download(url, args, model)
     transcript = build_transcript(
@@ -1235,7 +1374,7 @@ def _cmd_from_web_page(args: argparse.Namespace) -> int:
 def _cmd_validate(args: argparse.Namespace) -> int:
     path = Path(args.transcript_path).expanduser()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_read_utf8_text(path))
     except (OSError, json.JSONDecodeError) as e:
         raise UsageError(f"cannot read transcript JSON: {e}") from e
     validate(data)
