@@ -403,7 +403,7 @@ Call it when:
 Example:
 
 ```json
-{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Gate this draft and give rework steps for the flagged spans.", "context": "language: en; detector_results: [{vendor: pangram, ai_score: 34, flagged_spans: [...]}, {vendor: gptzero, ai_score: 18}]; uniqueness: {vendor: text-ru, uniqueness_percent: 92}; thresholds: ai_score < 20, uniqueness >= 85; draft: <draft text>", "skill": "text-quality"}}}
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Gate this draft and give rework steps for the flagged spans.", "context": "language: en; detector_results: [{vendor: pangram, ai_score: 34, flagged_spans: [...]}, {vendor: gptzero, ai_score: 18}]; uniqueness: {vendor: content-watch, uniqueness_percent: 92}; thresholds: ai_score < 20, uniqueness >= 85; draft: <draft text>", "skill": "text-quality"}}}
 ```
 
 Boundary notes: the partner never computes AI-likelihood or uniqueness scores itself - every score is a caller-supplied third-party reading treated as evidence, not ground truth. Verdicts are advisory and map to the caller's thresholds; the publish or hold decision belongs to the caller's gate and no publication, moderation or platform outcome is ever guaranteed. With no detector payload supplied it names the missing evidence and can offer only a slop-pattern read, clearly labeled as unverifiable against the gate.
