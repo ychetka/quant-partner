@@ -67,6 +67,13 @@ ADVISORY_PARTNERS = {
         "skills": {"media-analysis"},
         "temperature": 0.3,
     },
+    "text-quality-partner": {
+        "harness": "harness/text-quality-partner.txt",
+        "default_skill": "text-quality",
+        "skills_root": "skills/text-quality-partner",
+        "skills": {"text-quality"},
+        "temperature": 0.3,
+    },
 }
 
 GENERIC_TOOLS = {
@@ -266,6 +273,22 @@ class AdvisoryHarnessTest(unittest.TestCase):
             "speaker",
             "[mm:ss]",
             "banter",
+            "untrusted",
+        ):
+            self.assertIn(clause, text)
+
+    def test_text_quality_harness_boundary_clauses(self):
+        text = self._harness("text-quality-partner").lower()
+        for clause in (
+            "ai_score",
+            "uniqueness",
+            "flagged_spans",
+            "never compute",
+            "advisory",
+            "ground truth",
+            "evidence",
+            "caller",
+            "publish",
             "untrusted",
         ):
             self.assertIn(clause, text)

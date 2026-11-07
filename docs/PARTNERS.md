@@ -21,7 +21,7 @@ The tool surface depends on the partner's configured `toolset`:
 - Ask tools (all non-review toolsets, canonical names): `ask_partner(question, context?, files?, skill?, role?, model?)`, `ask_partner_v2(...)`, `ask_partner_dialog(messages, context?, skill?, role?, model?)`.
 - `code` toolset (`gh-copilot-partner`, `local-openai-partner`): the canonical `ask_partner*` tools plus the legacy aliases `ask_code_partner`, `ask_code_partner_v2`, `ask_code_partner_dialog` with the same signatures.
 - `product` toolset (`gemini-product`): the canonical `ask_partner*` tools plus the legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` with the same signatures.
-- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner`): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases - plus the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` described below.
+- `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner`, `text-quality-partner`): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases - plus the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` described below.
 - Any other configured `toolset` value routes to the same generic surface (the canonical `ask_partner*` tools, no aliases) but without the grounding fields - those are gated strictly on `toolset` being `advisory`.
 - `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
 
@@ -338,6 +338,8 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | Role descriptions / hand-off contracts | `org-partner` | `role-architecture` | `ask_partner` | Human and digital-employee JDs; inputs/outputs/SLA |
 | Video / meeting transcript Q&A | `media-partner` | `media-analysis` | `ask_partner` | Transcript via `context`/`files` from `tools/media_ingest.py` |
 | Decision extraction / meeting summary | `media-partner` | `media-analysis` | `ask_partner` | [mm:ss] citations required; oversized transcripts are caller-chunked |
+| Pre-publication draft gate / AI-detection triage | `text-quality-partner` | `text-quality` | `ask_partner` | Caller supplies the detector payload (vendor scores, flagged_spans, uniqueness) and thresholds |
+| Flagged-span rework for RU/EN drafts | `text-quality-partner` | `text-quality` | `ask_partner` | Per-span rewrite instructions; verdict maps to caller thresholds |
 | Self-hosted / OpenAI-compatible endpoint | `local-openai-partner` | `software-architect` | `ask_partner` | Disabled by default; enable only for endpoints you control |
 
 Decision rules:
@@ -347,6 +349,7 @@ Decision rules:
 - A conversation, a draft or anything that needs the venture brief - `comms-partner` with the context pack in `context`.
 - An engineering question - `gh-copilot-partner` (or `local-openai-partner` when a self-hosted endpoint is configured).
 - A question about what was said in a recording - `media-partner` over a transcript produced by `tools/media_ingest.py` (or a caller-supplied one) passed through `context` or `files`.
+- A draft to clear a pre-publication gate on AI-detector and uniqueness readings - `text-quality-partner` over a caller-supplied detector payload; without a payload it can only give a slop-pattern read, not a gate verdict.
 - When partners overlap - for example `pm-partner` versus `gemini-product` on MVP scope - prefer `pm-partner` for economics-heavy B2B framing and `gemini-product` for UX, release-note and spec-compliance work.
 
 ## media-partner
@@ -376,6 +379,34 @@ Example:
 ```
 
 Boundary notes: analyzes transcripts only - it never watches video and never listens to audio, and says so. Speaker identity is reported as unknown when the transcript's speaker field is null. Every moment-bound claim needs a [mm:ss] citation; oversized transcripts are the caller's responsibility to chunk and nothing is silently truncated. The transcript itself may carry automated-transcription errors and is treated as untrusted caller-supplied content.
+
+## text-quality-partner
+
+Pre-publication draft gate advisory for Russian- and English-language text through the Gemini API. Triage persona: reads the caller-supplied detector payload - vendor AI-detection scores, flagged spans, uniqueness percent and gate thresholds - alongside the draft text, then returns a pass, borderline or fail verdict with concrete rework instructions for each flagged span.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `text-quality`.
+- Skills root: `skills/text-quality-partner`.
+- Detector payload contract (supplied via `question`, `context` or `context_pack`): `language` (`ru`/`en`), `detector_results` (per-vendor `ai_score` 0-100 plus optional `flagged_spans`), `uniqueness` (vendor, `uniqueness_percent`, optional `matched_urls`), `thresholds` (defaults `ai_score` below 20, `uniqueness_percent` at or above 85) and the draft text itself.
+
+| Skill | When to use |
+| --- | --- |
+| `text-quality` | Use for pre-publication draft gate triage and per-flagged-span rework guidance over a caller-supplied detector payload in RU or EN drafts. |
+
+Call it when:
+
+- You have AI-detector readings (pangram, gptzero or other vendors) and a uniqueness reading for a draft and want a gate verdict against your thresholds.
+- You need concrete rework instructions for each flagged span - named slop patterns (hedging stacks, uniform rhythm, generic transitions, passive chains, template openers), not "make it sound human".
+- Vendor readings disagree and you want the conflict weighed instead of averaged away.
+- You want a RU/EN-aware read of machine-flavored writing in a draft.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Gate this draft and give rework steps for the flagged spans.", "context": "language: en; detector_results: [{vendor: pangram, ai_score: 34, flagged_spans: [...]}, {vendor: gptzero, ai_score: 18}]; uniqueness: {vendor: content-watch, uniqueness_percent: 92}; thresholds: ai_score < 20, uniqueness >= 85; draft: <draft text>", "skill": "text-quality"}}}
+```
+
+Boundary notes: the partner never computes AI-likelihood or uniqueness scores itself - every score is a caller-supplied third-party reading treated as evidence, not ground truth. Verdicts are advisory and map to the caller's thresholds; the publish or hold decision belongs to the caller's gate and no publication, moderation or platform outcome is ever guaranteed. With no detector payload supplied it names the missing evidence and can offer only a slop-pattern read, clearly labeled as unverifiable against the gate.
 
 ## Capability boundaries
 
