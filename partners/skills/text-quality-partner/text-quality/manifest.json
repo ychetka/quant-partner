@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "text-quality",
+  "description": "Pre-publication draft gate triage for Russian- and English-language text: pass, borderline or fail verdicts on caller-supplied AI-detector and uniqueness signals plus per-span rework guidance.",
+  "when_to_use": "Use to triage a draft against a caller-supplied detector payload (vendor ai_score readings, flagged_spans, uniqueness_percent, gate thresholds) and to get concrete rework instructions for flagged spans in RU or EN drafts.",
+  "generation": {
+    "temperature": 0.3
+  },
+  "version": 1
+}
