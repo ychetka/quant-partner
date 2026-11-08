@@ -253,6 +253,31 @@ Error contract (stderr `ERROR <code>: <message>`, exit 1):
 
 Cache policy: transcripts are stored in a bounded cache (`--cache-dir`, default `.cache/media-ingest`) keyed only by `content_hash` - a sha256 over canonicalized segments, never by URL or file path. Entries are 0600 files with a 6-hour TTL (`--cache-ttl-seconds`) and a 256-file bound (`--cache-max-files`); `--no-cache` bypasses it. A hit re-emits the stored transcript with the current input's `source.ref` and a `cache_hit: true` flag. The cache stores transcripts only - never partner questions or answers - and corrupt or tampered entries count as misses.
 
+### Visual annotations (optional adapter)
+
+`tools/visual_adapter.py` is an opt-in companion that enriches an existing `transcript.json` with visual observations extracted by a Gemini model through the Files API. It updates the transcript in place: new entries land in `annotations[]` as `{kind, t0, t1, text, source: "gemini-files-api", model, generated_at}` - `kind` is `visual` (scenes, slides, on-screen text, UI state) or `object` (tracked objects and people appearing/disappearing). Segments and `content_hash` are untouched, the write-back is atomic (temp file + `os.replace`, mode 0600) and the merged document is re-validated before it replaces the original - on any failure the file stays byte-identical.
+
+Prerequisites:
+
+- `GEMINI_API_KEY` in the environment. The key is sent only as the `x-goog-api-key` header - never in URLs - and every error path redacts it if a message ever echoes it back.
+- A local copy of the media: `--media PATH` always works; without it, `source.ref` is resolved when `source.kind == "local_file"` (URLs are never re-downloaded, so a `youtube`/`web_page` transcript without `--media` fails as `media_not_found`).
+
+Usage:
+
+```bash
+GEMINI_API_KEY=... python3 tools/visual_adapter.py \
+  --transcript transcript.json --media meeting.mp4
+
+# Re-run even when annotations for this transcript+model are cached
+python3 tools/visual_adapter.py --transcript transcript.json --force
+```
+
+The uploaded file is ephemeral: the adapter deletes it (best-effort) after the analysis and never persists file URIs. Extracted observations are cached under `~/.cache/quant-partner/visual/` (override with `--cache-dir`), keyed by `sha256({content_hash, model, prompt_version})`; a hit skips the API call entirely and needs no API key, `--force` bypasses it. `--chunk-seconds N` (default 30) bounds the observation window asked for in the prompt - stdlib-only means the media itself is never sliced. `--model` defaults to `gemini-2.5-flash`.
+
+Cost note: the adapter is opt-in and runs one paid Gemini Files-API upload plus one `generateContent` call per uncached transcript; the cache keeps repeat runs free. Model output is parsed defensively - malformed entries are dropped with a stderr warning, and output with no usable JSON array at all fails as `model_output_invalid` without touching the transcript.
+
+Named errors (stderr `ERROR <code>: <message>`, exit 1): `auth_error` (missing or rejected `GEMINI_API_KEY`), `media_not_found`, `upload_failed`, `file_api_error` (status poll or generate call), `quota_exceeded` (HTTP 429 or quota-class failures), `model_output_invalid`, plus the shared `invalid_usage`, `output_write_failed` and schema errors from `media_ingest`.
+
 ## Decision ledger
 
 `tools/decision_ledger.py` is an offline, stdlib-only companion to the advisory partners. It keeps an append-only `decisions.jsonl` ledger recording which partner recommendations the orchestrator adopted, modified or rejected - the raw material a `comms-partner` `retro-review` call later works over. It is not part of the MCP server and never calls a provider.

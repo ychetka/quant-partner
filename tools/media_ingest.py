@@ -132,6 +132,12 @@ _TRANSCRIPT_OPTIONAL = {"cache_hit"}
 _SOURCE_KEYS = {"kind", "ref", "transcription_method", "transcription_trust"}
 _SEGMENT_REQUIRED = {"t0", "t1", "text"}
 _SEGMENT_KEYS = _SEGMENT_REQUIRED | {"speaker"}
+# Adapter-produced observations (for example ``tools/visual_adapter.py``):
+# each annotation is a strict object with required ``kind``/``t0``/``t1``/
+# ``text`` and optional provenance strings ``source``/``model``/
+# ``generated_at``. The list itself may still be empty.
+_ANNOTATION_REQUIRED = {"kind", "t0", "t1", "text"}
+_ANNOTATION_KEYS = _ANNOTATION_REQUIRED | {"source", "model", "generated_at"}
 
 
 class IngestError(Exception):
@@ -262,6 +268,19 @@ def _check_segment_time(value: Any, index: int, name: str) -> None:
         )
 
 
+def _check_annotation_time(value: Any, index: int, name: str) -> None:
+    """Annotation times are required - unlike segment times, never null."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise TranscriptSchemaError(
+            f"annotations[{index}].{name} must be a non-negative finite number"
+        )
+
+
 def validate(obj: Any) -> None:
     """Raise ``TranscriptSchemaError`` unless ``obj`` is a valid transcript.
 
@@ -272,7 +291,10 @@ def validate(obj: Any) -> None:
     finite numbers with ``t1 >= t0`` when both are set, and a
     ``source.transcription_trust`` consistent with the declared
     ``transcription_method``. The only optional key is ``cache_hit``,
-    which must be exactly ``true`` when present.
+    which must be exactly ``true`` when present. ``annotations`` is an
+    array of strict observation objects (``kind``/``t0``/``t1``/``text``
+    required, ``source``/``model``/``generated_at`` optional strings);
+    an empty array remains valid.
     """
     if not isinstance(obj, dict):
         raise TranscriptSchemaError("transcript must be a JSON object")
@@ -362,7 +384,24 @@ def validate(obj: Any) -> None:
         raise TranscriptSchemaError("annotations must be an array")
     for index, annotation in enumerate(annotations):
         if not isinstance(annotation, dict):
-            raise TranscriptSchemaError(f"annotations[{index}] must be an object (reserved schema)")
+            raise TranscriptSchemaError(f"annotations[{index}] must be an object")
+        unknown = sorted(set(annotation) - _ANNOTATION_KEYS)
+        if unknown:
+            raise TranscriptSchemaError(f"annotations[{index}]: unknown keys: {', '.join(unknown)}")
+        for key in sorted(_ANNOTATION_REQUIRED):
+            if key not in annotation:
+                raise TranscriptSchemaError(f"annotations[{index}] missing key: {key}")
+        _check_annotation_time(annotation["t0"], index, "t0")
+        _check_annotation_time(annotation["t1"], index, "t1")
+        if annotation["t1"] < annotation["t0"]:
+            raise TranscriptSchemaError(f"annotations[{index}] has t1 before t0")
+        if not isinstance(annotation["kind"], str) or not annotation["kind"].strip():
+            raise TranscriptSchemaError(f"annotations[{index}].kind must be a non-empty string")
+        if not isinstance(annotation["text"], str) or not annotation["text"].strip():
+            raise TranscriptSchemaError(f"annotations[{index}].text must be a non-empty string")
+        for key in ("source", "model", "generated_at"):
+            if key in annotation and not isinstance(annotation[key], str):
+                raise TranscriptSchemaError(f"annotations[{index}].{key} must be a string")
 
     generated_at = obj["generated_at"]
     if not isinstance(generated_at, str) or _ISO_Z_RE.fullmatch(generated_at) is None:
