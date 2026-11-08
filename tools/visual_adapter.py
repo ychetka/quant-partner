@@ -25,17 +25,22 @@ Contract:
 - The media file is uploaded through the resumable-upload protocol of
   the Gemini Files API, polled until ``ACTIVE`` and referenced by
   ``file_data.file_uri`` in one ``generateContent`` call asking for a
-  JSON array of ``{t0, t1, kind, text}`` observations. The uploaded
-  file is ephemeral scratch: it is deleted best-effort after use and
-  its URI is never persisted.
+  JSON array of ``{t0, t1, kind, text}`` observations. The upload body
+  streams straight from disk (an open file object plus an explicit
+  ``Content-Length``) and its timeout scales with size at a ~512 KiB/s
+  floor. The uploaded file is ephemeral scratch: it is deleted
+  best-effort after use and its URI is never persisted.
 - Extracted annotations are cached under ``--cache-dir`` (default
   ``~/.cache/quant-partner/visual/``) keyed by sha256 of canonical JSON
-  ``{content_hash, model, PROMPT_VERSION}``; a hit skips the paid API
-  call entirely and needs no API key. ``--force`` bypasses the read.
-- Merge is deduplicated on ``(kind, t0, t1, model)`` and written back
-  atomically: ``transcript.json.tmp`` + ``os.replace`` + mode 0600,
-  with ``validate()`` run before the replace - on any failure the
-  original file stays byte-identical.
+  ``{content_hash, model, PROMPT_VERSION}``; the cache is consulted
+  before media resolution, so a hit skips the paid API call entirely
+  and needs neither an API key nor the media file. ``--force``
+  bypasses the read.
+- Merge is deduplicated on ``(kind, t0, t1, model or source)`` and
+  written back atomically: a ``tempfile.mkstemp`` file in the
+  transcript's own directory + ``os.replace`` + mode 0600, with
+  ``validate()`` run before the replace - on any failure the original
+  file stays byte-identical.
 - ``--chunk-seconds N`` bounds the observation window asked for in the
   prompt (stdlib-only: the script cannot slice media itself, so the
   value steers the model's granularity rather than splitting input).
@@ -54,9 +59,10 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 # media_ingest is a sibling tool, not an installed package: import it
 # from this script's directory so the schema contract, the named-error
@@ -158,12 +164,37 @@ def _extract_error_message(raw: bytes, status: int, secrets: list[str]) -> str:
     return _redact(body[:600] or f"HTTP {status}", secrets)
 
 
+class _KeyStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward ``x-goog-api-key`` to a different host.
+
+    urllib re-sends a request's custom headers on redirect; if the API
+    ever answers with a redirect to a foreign host, the credential
+    must be dropped from the followed request.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        original_host = urllib.parse.urlparse(req.full_url).hostname
+        target_host = urllib.parse.urlparse(redirected.full_url).hostname
+        if target_host != original_host:
+            redirected.remove_header("X-goog-api-key")
+        return redirected
+
+
+# This script owns its process: installing the opener at import time
+# makes every urlopen call - including tests patching urlopen - share
+# the redirect policy above.
+urllib.request.install_opener(urllib.request.build_opener(_KeyStrippingRedirectHandler))
+
+
 def _http_request(
     method: str,
     url: str,
     *,
     headers: dict[str, str] | None = None,
-    body: bytes | None = None,
+    body: bytes | BinaryIO | None = None,
     timeout: int = HTTP_TIMEOUT_SECONDS,
     secrets: list[str] | tuple[str, ...] = (),
 ) -> tuple[Any, bytes]:
@@ -172,6 +203,9 @@ def _http_request(
     The API key travels only inside ``headers`` (``x-goog-api-key``);
     the URL is always key-free and every failure channel - HTTP error
     bodies, socket reasons - is redacted before it becomes a message.
+    ``body`` may be an open binary file object: http.client then reads
+    it in blocks, so large uploads never materialize in memory - the
+    caller must set an explicit ``Content-Length`` header for that.
     """
     request = urllib.request.Request(url, data=body, headers=headers or {}, method=method)
     try:
@@ -219,17 +253,25 @@ def _upload_file(
     timeout: int,
     secrets: list[str],
 ) -> dict[str, Any]:
-    """Resumable-upload ``media_path``; return the file resource dict."""
+    """Resumable-upload ``media_path``; return the file resource dict.
+
+    The media bytes are never buffered in memory: the PUT body is an
+    open binary file object with an explicit ``Content-Length``, so
+    http.client streams it in blocks. The upload timeout scales with
+    the file size at a ~512 KiB/s floor so large media gets the time
+    it needs.
+    """
     try:
-        media_bytes = media_path.read_bytes()
+        size_bytes = media_path.stat().st_size
     except OSError as e:
         raise MediaNotFound(f"cannot read media file: {e}") from e
+    upload_timeout = max(timeout, math.ceil(size_bytes / (512 * 1024)))
     start_headers = {
         "x-goog-api-key": api_key,
         "Content-Type": "application/json",
         "X-Goog-Upload-Protocol": "resumable",
         "X-Goog-Upload-Command": "start",
-        "X-Goog-Upload-Header-Content-Length": str(len(media_bytes)),
+        "X-Goog-Upload-Header-Content-Length": str(size_bytes),
         "X-Goog-Upload-Header-Content-Type": mime_type,
     }
     start_body = json.dumps({"file": {"display_name": media_path.name}}).encode("utf-8")
@@ -252,20 +294,24 @@ def _upload_file(
     put_headers = {
         "x-goog-api-key": api_key,
         "Content-Type": mime_type,
+        "Content-Length": str(size_bytes),
         "X-Goog-Upload-Offset": "0",
         "X-Goog-Upload-Command": "upload, finalize",
     }
     try:
-        _, raw = _http_request(
-            "PUT",
-            upload_url,
-            headers=put_headers,
-            body=media_bytes,
-            timeout=timeout,
-            secrets=secrets,
-        )
+        with media_path.open("rb") as media_file:
+            _, raw = _http_request(
+                "PUT",
+                upload_url,
+                headers=put_headers,
+                body=media_file,
+                timeout=upload_timeout,
+                secrets=secrets,
+            )
     except _HttpFailure as e:
         raise _map_http_failure(e, lambda m: UploadError(f"media upload failed: {m}")) from e
+    except OSError as e:
+        raise MediaNotFound(f"cannot read media file: {e}") from e
     try:
         resource = json.loads(raw or b"{}")
     except json.JSONDecodeError as e:
@@ -406,7 +452,18 @@ def _generate_text(
         content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
         if isinstance(content, dict) and isinstance(content.get("parts"), list):
             parts = content["parts"]
-    text = "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict)).strip()
+    # Join only plain text parts: thinking models can interleave
+    # ``thought``/``thoughtSignature`` parts whose text is the model's
+    # internal reasoning, not the answer.
+    text = "".join(
+        part["text"]
+        for part in parts
+        if isinstance(part, dict)
+        and isinstance(part.get("text"), str)
+        and part["text"]
+        and "thought" not in part
+        and "thoughtSignature" not in part
+    ).strip()
     if not text:
         raise ModelOutputError("model returned an empty response")
     return text
@@ -627,37 +684,47 @@ def _resolve_media_path(
     )
 
 
+def _annotation_key(annotation: dict[str, Any]) -> tuple[Any, ...]:
+    """Dedupe key: ``(kind, t0, t1, model or source or "")``.
+
+    Model-less annotations still carry a producer in ``source``: keying
+    on that keeps two different producers from collapsing onto one
+    ``None`` key while letting a producer's own entries dedupe.
+    """
+    return (
+        annotation.get("kind"),
+        annotation.get("t0"),
+        annotation.get("t1"),
+        annotation.get("model") or annotation.get("source") or "",
+    )
+
+
 def _merge_annotations(
     transcript: dict[str, Any], entries: list[dict[str, Any]], model: str
 ) -> dict[str, Any]:
-    """Append adapter-stamped annotations, deduped on (kind, t0, t1, model).
+    """Append adapter-stamped annotations, deduped on the annotation key.
 
     Existing entries win collisions; entries produced by another model
     or another adapter source never collide with this run's output.
     """
     merged = list(transcript["annotations"])
-    seen = {
-        (a.get("kind"), a.get("t0"), a.get("t1"), a.get("model"))
-        for a in merged
-        if isinstance(a, dict)
-    }
+    seen = {_annotation_key(a) for a in merged if isinstance(a, dict)}
     stamp = mi._now_iso_z()
     for entry in entries:
-        key = (entry["kind"], entry["t0"], entry["t1"], model)
+        annotation = {
+            "kind": entry["kind"],
+            "t0": entry["t0"],
+            "t1": entry["t1"],
+            "text": entry["text"],
+            "source": SCHEMA_SOURCE,
+            "model": model,
+            "generated_at": stamp,
+        }
+        key = _annotation_key(annotation)
         if key in seen:
             continue
         seen.add(key)
-        merged.append(
-            {
-                "kind": entry["kind"],
-                "t0": entry["t0"],
-                "t1": entry["t1"],
-                "text": entry["text"],
-                "source": SCHEMA_SOURCE,
-                "model": model,
-                "generated_at": stamp,
-            }
-        )
+        merged.append(annotation)
     doc = dict(transcript)
     doc["annotations"] = merged
     # Fail-closed: the merged document is validated before a single byte
@@ -668,21 +735,40 @@ def _merge_annotations(
 
 
 def _write_back(transcript_path: Path, doc: dict[str, Any]) -> None:
-    """Atomically replace transcript.json with the merged document (0600)."""
+    """Atomically replace transcript.json with the merged document (0600).
+
+    The temp file comes from ``tempfile.mkstemp`` in the transcript's
+    own directory: concurrent runs get unique names instead of racing
+    on a fixed ``*.tmp`` path, and ``os.replace`` stays on one
+    filesystem. Any failure unlinks the temp file and leaves the
+    original untouched.
+    """
     text = json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    tmp_path = transcript_path.with_name(transcript_path.name + ".tmp")
+    fd = -1
+    tmp_name = ""
     try:
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=transcript_path.parent,
+            prefix=f".{transcript_path.name}.",
+            suffix=".tmp",
+        )
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            # O_CREAT mode applies only to a new file; force 0600 either way.
+            fd = -1  # the file object owns the descriptor now
+            # mkstemp already creates the file 0600; force it anyway.
             os.fchmod(handle.fileno(), 0o600)
             handle.write(text)
-        os.replace(tmp_path, transcript_path)
+        os.replace(tmp_name, transcript_path)
     except OSError as e:
-        try:
-            tmp_path.unlink()
-        except OSError:
-            pass
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
         raise OutputWriteError(
             f"cannot write transcript back: {e}",
             "the original transcript.json was left untouched",
@@ -754,9 +840,10 @@ def _run(args: argparse.Namespace, key: str) -> int:
     except json.JSONDecodeError as e:
         raise UsageError(f"transcript is not valid JSON: {e}") from e
     validate(transcript)
-    media_path = _resolve_media_path(transcript, args.media, transcript_path)
     cache = VisualCache(args.cache_dir)
     cache_key = visual_cache_key(transcript["content_hash"], args.model)
+    # The cache is consulted before media resolution: a hit needs
+    # neither the media file nor the API credential.
     entries = None if args.force else cache.get(cache_key)
     if entries is not None:
         print(
@@ -764,7 +851,7 @@ def _run(args: argparse.Namespace, key: str) -> int:
             file=sys.stderr,
         )
     else:
-        # The credential is required lazily: a cache hit needs no key.
+        media_path = _resolve_media_path(transcript, args.media, transcript_path)
         if not key:
             raise AuthError(
                 f"{ENV_CREDENTIAL} is not set",

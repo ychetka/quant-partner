@@ -97,6 +97,7 @@ def _json_response(payload):
 def _fake_urlopen_factory(
     *,
     model_text="[]",
+    model_parts=None,
     file_states=("ACTIVE",),
     fail_at=None,
     fail_status=500,
@@ -105,8 +106,10 @@ def _fake_urlopen_factory(
     """Build a urlopen stand-in covering the whole Files-API flow.
 
     ``fail_at`` names the stage to break: ``start``, ``put``, ``poll``,
-    ``generate`` or ``delete``. Recorded requests let tests assert the
-    transport contract (methods, URLs, headers).
+    ``generate`` or ``delete``. ``model_parts`` overrides the raw
+    candidates[].content.parts payload (for thought-part tests), while
+    ``model_text`` wraps a single plain-text part. Recorded requests
+    let tests assert the transport contract (methods, URLs, headers).
     """
     calls = []
     states = iter(file_states)
@@ -136,7 +139,8 @@ def _fake_urlopen_factory(
         if method == "POST" and ":generateContent" in url:
             if fail_at == "generate":
                 raise _http_error(fail_status, fail_message)
-            return _json_response({"candidates": [{"content": {"parts": [{"text": model_text}]}}]})
+            parts = model_parts if model_parts is not None else [{"text": model_text}]
+            return _json_response({"candidates": [{"content": {"parts": parts}}]})
         if method == "DELETE":
             if fail_at == "delete":
                 raise _http_error(fail_status, fail_message)
@@ -405,6 +409,41 @@ class AdapterFlowTest(unittest.TestCase):
             mi.validate(merged)
             self.assertEqual(len(merged["annotations"]), 2)
 
+    def test_cache_hit_succeeds_when_media_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # A URL-sourced transcript has no resolvable media at all:
+            # a cache hit must still merge and write back successfully.
+            transcript_path = _write_transcript(
+                tmp, _transcript(kind="youtube", ref="https://youtu.be/xyz")
+            )
+            cache_dir = Path(tmp) / "cache"
+            transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+            cache = va.VisualCache(cache_dir)
+            key = va.visual_cache_key(transcript["content_hash"], "gemini-2.5-flash")
+            cache.put(key, GOOD_ENTRIES)
+            env = {k: v for k, v in os.environ.items() if k != va.ENV_CREDENTIAL}
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(
+                    va.urllib.request,
+                    "urlopen",
+                    side_effect=AssertionError("network must not be touched"),
+                ),
+            ):
+                code, _, err = _run_main(
+                    [
+                        "--transcript",
+                        str(transcript_path),
+                        "--cache-dir",
+                        str(cache_dir),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            self.assertIn("cache hit", err)
+            merged = json.loads(transcript_path.read_text(encoding="utf-8"))
+            mi.validate(merged)
+            self.assertEqual(len(merged["annotations"]), 2)
+
     def test_force_bypasses_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, transcript_path = self._workspace(tmp)
@@ -491,9 +530,10 @@ class AdapterFlowTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertEqual(out, "")
             self.assertIn("file_api_error", err)
-            # Byte-identical original, no stray .tmp file left behind.
+            # Byte-identical original, no stray temp file left behind.
             self.assertEqual(transcript_path.read_bytes(), before)
-            self.assertFalse((Path(tmp) / "transcript.json.tmp").exists())
+            leftovers = [p for p in Path(tmp).iterdir() if p.name.endswith(".tmp")]
+            self.assertEqual(leftovers, [])
 
     def test_model_garbage_keeps_original_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -716,6 +756,206 @@ class AdapterFlowTest(unittest.TestCase):
             code, _, err = _run_main(["--transcript", str(bad)])
             self.assertEqual(code, 1)
             self.assertIn("unsupported_schema_version", err)
+
+
+class WriteBackTest(unittest.TestCase):
+    def test_sequential_writes_leave_valid_json_and_no_tmp_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript_path = _write_transcript(tmp, _transcript())
+            stamp = "2026-11-08T12:30:00Z"
+            doc_a = _transcript()
+            doc_b = dict(_transcript())
+            doc_b["annotations"] = [
+                {
+                    "kind": "visual",
+                    "t0": 1.0,
+                    "t1": 4.0,
+                    "text": "from second writer",
+                    "source": "gemini-files-api",
+                    "model": "gemini-2.5-flash",
+                    "generated_at": stamp,
+                }
+            ]
+            # mkstemp names are unique per call, so two writes (the
+            # concurrent-run stand-in) cannot corrupt each other; the
+            # second write is the deterministic last writer.
+            va._write_back(transcript_path, doc_a)
+            va._write_back(transcript_path, doc_b)
+            merged = json.loads(transcript_path.read_text(encoding="utf-8"))
+            mi.validate(merged)
+            self.assertEqual(len(merged["annotations"]), 1)
+            self.assertEqual(merged["annotations"][0]["text"], "from second writer")
+            leftovers = [p for p in Path(tmp).iterdir() if p.name.endswith(".tmp")]
+            self.assertEqual(leftovers, [])
+            self.assertEqual(stat.S_IMODE(transcript_path.stat().st_mode), 0o600)
+
+
+class UploadTransportTest(unittest.TestCase):
+    def test_put_streams_file_object_and_scales_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "big.bin"
+            # Sparse file: ~70 MiB apparent size, near-zero disk use.
+            with media.open("wb") as handle:
+                handle.seek(70 * 1024 * 1024)
+                handle.write(b"x")
+            seen = {}
+
+            def fake_urlopen(request, timeout=None):
+                url, method = request.full_url, request.get_method()
+                if method == "POST" and "/upload/" in url:
+                    return _FakeResponse(b"", headers={"X-Goog-Upload-URL": UPLOAD_URL})
+                if method == "PUT":
+                    seen["data"] = request.data
+                    seen["timeout"] = timeout
+                    seen["content_length"] = request.get_header("Content-length")
+                    return _json_response(
+                        {"file": {"name": "files/abc123", "uri": FILE_URI, "state": "ACTIVE"}}
+                    )
+                raise AssertionError(f"unexpected request: {method} {url}")
+
+            with patch.object(va.urllib.request, "urlopen", side_effect=fake_urlopen):
+                info = va._upload_file(media, "application/octet-stream", TEST_KEY, 120, [TEST_KEY])
+            self.assertEqual(info["name"], "files/abc123")
+            size = media.stat().st_size
+            self.assertEqual(seen["content_length"], str(size))
+            # The body is a file object http.client reads in blocks -
+            # never a fully materialized bytes blob.
+            self.assertTrue(hasattr(seen["data"], "read"))
+            self.assertNotIsInstance(seen["data"], bytes)
+            # ~70 MiB at a 512 KiB/s floor needs ~140s > the 120s floor.
+            self.assertGreater(seen["timeout"], 120)
+            self.assertEqual(seen["timeout"], max(120, -(-size // (512 * 1024))))
+
+    def test_put_small_file_keeps_floor_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "small.bin"
+            media.write_bytes(b"tiny")
+            seen = {}
+
+            def fake_urlopen(request, timeout=None):
+                url, method = request.full_url, request.get_method()
+                if method == "POST" and "/upload/" in url:
+                    return _FakeResponse(b"", headers={"X-Goog-Upload-URL": UPLOAD_URL})
+                if method == "PUT":
+                    seen["timeout"] = timeout
+                    seen["data"] = request.data
+                    return _json_response(
+                        {"file": {"name": "files/abc123", "uri": FILE_URI, "state": "ACTIVE"}}
+                    )
+                raise AssertionError(f"unexpected request: {method} {url}")
+
+            with patch.object(va.urllib.request, "urlopen", side_effect=fake_urlopen):
+                va._upload_file(media, "application/octet-stream", TEST_KEY, 120, [TEST_KEY])
+            self.assertEqual(seen["timeout"], 120)
+
+
+class RedirectKeyStripTest(unittest.TestCase):
+    def test_cross_host_redirect_drops_api_key_header(self):
+        handler = va._KeyStrippingRedirectHandler()
+        request = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/files/abc123",
+            headers={"x-goog-api-key": TEST_KEY},
+            method="GET",
+        )
+        redirected = handler.redirect_request(
+            request, None, 302, "Found", {}, "https://attacker.invalid/capture"
+        )
+        self.assertIsNotNone(redirected)
+        self.assertIsNone(redirected.get_header("X-goog-api-key"))
+
+    def test_same_host_redirect_keeps_api_key_header(self):
+        handler = va._KeyStrippingRedirectHandler()
+        request = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/files/abc123",
+            headers={"x-goog-api-key": TEST_KEY},
+            method="GET",
+        )
+        redirected = handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://generativelanguage.googleapis.com/v1beta/files/def456",
+        )
+        self.assertIsNotNone(redirected)
+        self.assertEqual(redirected.get_header("X-goog-api-key"), TEST_KEY)
+
+
+class ThoughtPartsTest(unittest.TestCase):
+    def test_thought_and_signature_parts_are_ignored(self):
+        parts = [
+            {"text": "Let me inspect the video frames.", "thought": True},
+            {"text": "signature blob", "thoughtSignature": "abc123"},
+            {"text": json.dumps(GOOD_ENTRIES)},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "meeting.mp4"
+            media.write_bytes(b"fake")
+            fake, _ = _fake_urlopen_factory(model_parts=parts)
+            key = TEST_KEY
+            with patch.object(va.urllib.request, "urlopen", side_effect=fake):
+                entries = va.analyze_media(
+                    media,
+                    model="gemini-2.5-flash",
+                    api_key=key,
+                    chunk_seconds=30,
+                    poll_interval=0,
+                )
+            self.assertEqual(entries, GOOD_ENTRIES)
+
+    def test_thought_only_parts_fail_closed(self):
+        parts = [
+            {"text": "reasoning, not the answer", "thought": True},
+            {"thoughtSignature": "abc123"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "meeting.mp4"
+            media.write_bytes(b"fake")
+            fake, _ = _fake_urlopen_factory(model_parts=parts)
+            key = TEST_KEY
+            with patch.object(va.urllib.request, "urlopen", side_effect=fake):
+                with self.assertRaises(va.ModelOutputError):
+                    va.analyze_media(
+                        media,
+                        model="gemini-2.5-flash",
+                        api_key=key,
+                        chunk_seconds=30,
+                        poll_interval=0,
+                    )
+
+
+class DedupeKeyTest(unittest.TestCase):
+    def test_model_less_annotations_dedupe_on_source(self):
+        # A model-less annotation from another producer must not be
+        # swallowed by a shared None key, and a model-less entry from
+        # this adapter still dedupes on its source.
+        transcript = _transcript()
+        transcript["annotations"] = [
+            {
+                "kind": "visual",
+                "t0": 1.0,
+                "t1": 4.0,
+                "text": "other producer",
+                "source": "other-adapter",
+            }
+        ]
+        doc = va._merge_annotations(transcript, [GOOD_ENTRIES[0]], "gemini-2.5-flash")
+        self.assertEqual(len(doc["annotations"]), 2)
+        # Same slot stamped by this adapter but without a model:
+        # an empty-model run dedupes on SCHEMA_SOURCE.
+        transcript["annotations"] = [
+            {
+                "kind": "visual",
+                "t0": 1.0,
+                "t1": 4.0,
+                "text": "prior adapter run",
+                "source": "gemini-files-api",
+            }
+        ]
+        doc = va._merge_annotations(transcript, [GOOD_ENTRIES[0]], "")
+        self.assertEqual(len(doc["annotations"]), 1)
+        self.assertEqual(doc["annotations"][0]["text"], "prior adapter run")
 
 
 if __name__ == "__main__":
