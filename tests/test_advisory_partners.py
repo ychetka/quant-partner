@@ -50,7 +50,7 @@ ADVISORY_PARTNERS = {
         "harness": "harness/comms-partner.txt",
         "default_skill": "communication",
         "skills_root": "skills/comms-partner",
-        "skills": {"communication"},
+        "skills": {"communication", "retro-review"},
         "temperature": 0.4,
     },
     "org-partner": {
