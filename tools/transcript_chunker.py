@@ -114,7 +114,11 @@ def _emit_chunk(
             "t1": max(t1s) if t1s else None,
             "segment_ids": list(indices),
             "speaker_set": sorted(
-                {segment["speaker"] for segment in covered if isinstance(segment["speaker"], str)}
+                {
+                    segment.get("speaker")
+                    for segment in covered
+                    if isinstance(segment.get("speaker"), str)
+                }
             ),
             "text": text,
             "char_count": len(text),

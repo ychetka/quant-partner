@@ -155,6 +155,19 @@ class ChunkShapeTest(unittest.TestCase):
         (chunk,) = tc.chunk_transcript(_transcript(segments))
         self.assertEqual(chunk["speaker_set"], ["ann", "bob"])
 
+    def test_segments_without_optional_speaker_key(self):
+        # ``speaker`` is optional in the transcript schema: a valid
+        # transcript may omit the key entirely, and chunking must not
+        # raise KeyError on it.
+        transcript = _transcript(_segments(4))
+        for segment in transcript["segments"]:
+            del segment["speaker"]
+        chunks = tc.chunk_transcript(transcript, max_chars=100)
+        covered = [i for chunk in chunks for i in chunk["segment_ids"]]
+        self.assertEqual(covered, [0, 1, 2, 3])
+        for chunk in chunks:
+            self.assertEqual(chunk["speaker_set"], [])
+
 
 class SpeakerPreferenceTest(unittest.TestCase):
     def _diarized(self):

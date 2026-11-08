@@ -244,6 +244,20 @@ class BuildTest(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertIn("foreign.json", err)
 
+    def test_index_file_inside_scanned_dir_is_not_a_candidate(self):
+        # The --index output typically sits inside the scanned
+        # directory: a rebuild must exclude it from candidates rather
+        # than warn that the index is "not a valid transcript".
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_transcript(tmp, "a.json", ["alpha beta"])
+            index_path = Path(tmp) / "index.json"
+            self.assertEqual(_run_main(["build", tmp, "--index", str(index_path)])[0], 0)
+            code, _, err = _run_main(["build", tmp, "--index", str(index_path)])
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("skipped", err)
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(index["doc_sources"]), 1)
+
 
 class SidecarUseTest(unittest.TestCase):
     def test_matching_sidecar_used_instead_of_chunking(self):
@@ -384,6 +398,49 @@ class QueryTest(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("rag_index_error", err)
             self.assertIn("99", err)
+
+    def test_index_chunk_missing_speaker_set_is_rag_index_error(self):
+        # A corrupt index must fail validation naming the offending key
+        # path, not pass through to a KeyError at query time.
+        with tempfile.TemporaryDirectory() as tmp:
+            index_path, _, ta = self._corpus(tmp)
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            del index["chunks"][ta["content_hash"]][0]["speaker_set"]
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            code, _, err = _run_main(["query", "budget", "--index", str(index_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("rag_index_error", err)
+            self.assertIn("chunks[", err)
+            self.assertIn("speaker_set", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_orphan_chunk_hit_has_null_path_and_flag(self):
+        # A chunk whose content_hash is absent from doc_sources - a
+        # hand-edited index or a moved document - keeps its citation
+        # anchors but reports "path": null plus "orphan": true rather
+        # than a silently empty string.
+        with tempfile.TemporaryDirectory() as tmp:
+            index_path, _, ta = self._corpus(tmp)
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            index["doc_sources"] = [
+                source
+                for source in index["doc_sources"]
+                if source["content_hash"] != ta["content_hash"]
+            ]
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            code, out, err = _run_main(["query", "budget forecast", "--index", str(index_path)])
+            self.assertEqual(code, 0, err)
+            orphans = [hit for hit in json.loads(out) if hit["content_hash"] == ta["content_hash"]]
+            self.assertTrue(orphans)
+            for hit in orphans:
+                self.assertIsNone(hit["path"])
+                self.assertIs(hit["orphan"], True)
+            # Unflagged hits keep their regular string path.
+            code, out, err = _run_main(["query", "soup", "--index", str(index_path)])
+            self.assertEqual(code, 0, err)
+            for hit in json.loads(out):
+                self.assertNotIn("orphan", hit)
+                self.assertTrue(hit["path"])
 
     def test_empty_question_is_invalid_usage(self):
         code, _, err = _run_main(["query", "   ", "--index", "x.json"])

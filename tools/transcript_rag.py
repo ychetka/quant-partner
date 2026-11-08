@@ -31,10 +31,11 @@ Index file (atomic write, mode 0600):
   ingest cache - so identical transcripts share one chunk set while
   every discovered path stays listed in ``doc_sources``.
 - ``build <path...> --index PATH`` scans directories recursively for
-  ``*.json`` transcripts (``*.chunks.json`` sidecars excluded) and
-  accepts files directly. Each candidate is validated through
-  ``media_ingest.validate()``; unreadable, non-JSON or schema-invalid
-  files are skipped with a stderr warning and never crash the build.
+  ``*.json`` transcripts (``*.chunks.json`` sidecars and the ``--index``
+  file itself excluded) and accepts files directly. Each candidate is
+  validated through ``media_ingest.validate()``; unreadable, non-JSON
+  or schema-invalid files are skipped with a stderr warning and never
+  crash the build.
   The build is incremental: documents whose ``content_hash`` is
   already in ``doc_sources`` keep their stored chunks unless
   ``--rebuild`` is passed, and documents no longer discovered are
@@ -42,9 +43,12 @@ Index file (atomic write, mode 0600):
 - ``query --index PATH "question" --top-k N`` prints a JSON array of
   ``{path, content_hash, chunk_id, t0, t1, speaker_set, score,
   snippet}`` sorted by descending BM25 score (ties broken by
-  content_hash then chunk_id, so output is stable). ``--ephemeral
-  <paths...>`` builds the same index in memory over ad-hoc files and
-  writes nothing.
+  content_hash then chunk_id, so output is stable). A hit whose
+  ``content_hash`` is absent from ``doc_sources`` - a hand-edited index
+  or a moved document - is still returned, but with ``"path": null``
+  plus ``"orphan": true`` instead of a silently empty path.
+  ``--ephemeral <paths...>`` builds the same index in memory over
+  ad-hoc files and writes nothing.
 - Tokenizer: lowercase, split on non-alphanumeric runs, drop tokens
   shorter than 2 chars; no stemming (stdlib only), fully
   deterministic.
@@ -166,15 +170,26 @@ def _load_transcript(path: Path) -> dict[str, Any] | None:
     return data
 
 
-def gather_documents(inputs: list[str]) -> list[tuple[str, dict[str, Any]]]:
+def gather_documents(
+    inputs: list[str], *, exclude: Path | None = None
+) -> list[tuple[str, dict[str, Any]]]:
     """Resolve files/dirs to ``(path, transcript)`` pairs; never raises.
 
     Directories are scanned recursively for ``*.json`` (chunks sidecars
-    excluded); explicit file arguments are accepted as-is. Each
-    candidate is schema-validated and invalid files are skipped with a
-    warning. Paths are stored resolved so index entries stay valid
-    regardless of the caller's working directory.
+    excluded); explicit file arguments are accepted as-is. ``exclude`` -
+    typically the ``--index`` output path, which may sit inside a
+    scanned directory - is resolved and dropped from the candidates so
+    a build never tries to ingest its own index. Each candidate is
+    schema-validated and invalid files are skipped with a warning.
+    Paths are stored resolved so index entries stay valid regardless of
+    the caller's working directory.
     """
+    excluded: str | None = None
+    if exclude is not None:
+        try:
+            excluded = str(exclude.resolve())
+        except OSError:
+            excluded = str(exclude.absolute())
     candidates: list[Path] = []
     for raw in inputs:
         path = Path(raw).expanduser()
@@ -190,6 +205,8 @@ def gather_documents(inputs: list[str]) -> list[tuple[str, dict[str, Any]]]:
         else:
             _warn(f"path not found, skipped: {path}")
     seen: set[str] = set()
+    if excluded is not None:
+        seen.add(excluded)
     documents: list[tuple[str, dict[str, Any]]] = []
     for candidate in candidates:
         try:
@@ -347,12 +364,29 @@ def validate_index(obj: Any) -> None:
             where = f"chunks[{doc_id!r}][{index}]"
             if not isinstance(chunk, dict):
                 raise RagIndexError(f"{where} must be an object", _REBUILD_HINT)
-            if not isinstance(chunk.get("text"), str):
+            # query_index dereferences each of these keys directly, so
+            # every one must be present and well-typed here - otherwise
+            # a corrupt index passes validation and crashes query time
+            # with a raw KeyError instead of a named rag_index_error.
+            for key in ("chunk_id", "t0", "t1", "speaker_set", "text"):
+                if key not in chunk:
+                    raise RagIndexError(f"{where} is missing key: {key}", _REBUILD_HINT)
+            if not isinstance(chunk["text"], str):
                 raise RagIndexError(f"{where}.text must be a string", _REBUILD_HINT)
-            if isinstance(chunk.get("chunk_id"), bool) or not isinstance(
-                chunk.get("chunk_id"), int
-            ):
+            if isinstance(chunk["chunk_id"], bool) or not isinstance(chunk["chunk_id"], int):
                 raise RagIndexError(f"{where}.chunk_id must be an integer", _REBUILD_HINT)
+            for key in ("t0", "t1"):
+                value = chunk[key]
+                if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, (int, float))
+                ):
+                    raise RagIndexError(f"{where}.{key} must be null or a number", _REBUILD_HINT)
+            if not isinstance(chunk["speaker_set"], list) or not all(
+                isinstance(speaker, str) for speaker in chunk["speaker_set"]
+            ):
+                raise RagIndexError(
+                    f"{where}.speaker_set must be an array of strings", _REBUILD_HINT
+                )
     postings = obj["postings"]
     if not isinstance(postings, dict):
         raise RagIndexError("postings must be an object keyed by term", _REBUILD_HINT)
@@ -444,7 +478,11 @@ def query_index(index: dict[str, Any], question: str, top_k: int) -> list[dict[s
     overlap yields ``[]`` rather than noise. Results are sorted by
     descending score with ``(content_hash, chunk_id)`` tie-breaks, and
     scores are rounded to 6 decimals - output is deterministic for a
-    fixed index and question.
+    fixed index and question. A hit whose ``content_hash`` is missing
+    from ``doc_sources`` (a hand-edited index or a moved document)
+    keeps its citation anchors but reports ``"path": None`` plus an
+    ``"orphan": true`` flag, so the gap is explicit rather than an
+    empty string.
     """
     terms = sorted(set(tokenize(question)))
     if not terms or top_k <= 0:
@@ -483,9 +521,10 @@ def query_index(index: dict[str, Any], question: str, top_k: int) -> list[dict[s
             if score > 0.0:
                 scored.append((score, doc_id, chunk))
     scored.sort(key=lambda item: (-item[0], item[1], item[2]["chunk_id"]))
-    return [
-        {
-            "path": path_of.get(doc_id, ""),
+    hits: list[dict[str, Any]] = []
+    for score, doc_id, chunk in scored[:top_k]:
+        hit = {
+            "path": path_of.get(doc_id),
             "content_hash": doc_id,
             "chunk_id": chunk["chunk_id"],
             "t0": chunk["t0"],
@@ -494,8 +533,14 @@ def query_index(index: dict[str, Any], question: str, top_k: int) -> list[dict[s
             "score": round(score, 6),
             "snippet": _snippet(chunk["text"], terms),
         }
-        for score, doc_id, chunk in scored[:top_k]
-    ]
+        if hit["path"] is None:
+            # The chunk's content_hash is absent from doc_sources - a
+            # hand-edited index or a document dropped without a rebuild.
+            # Keep the hit (its citation anchors are still valid) but
+            # label the missing path instead of emitting a silent "".
+            hit["orphan"] = True
+        hits.append(hit)
+    return hits
 
 
 # --- CLI -----------------------------------------------------------------------
@@ -575,7 +620,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
     existing = None
     if not args.rebuild and index_path.is_file():
         existing = load_index(index_path)
-    documents = gather_documents(args.paths)
+    documents = gather_documents(args.paths, exclude=index_path)
     if not documents:
         raise RagCorpusEmpty(
             f"no valid transcripts found under: {', '.join(args.paths)}",
