@@ -349,7 +349,7 @@ Run the static type checker:
 uvx --from "pyright[nodejs]==1.1.414" pyright
 ```
 
-CI runs this check in a separate `typecheck` job that is currently non-blocking (`continue-on-error: true`) until the known error baseline is fixed. Once the baseline is cleaned up, `continue-on-error` should be removed so the check becomes blocking.
+CI runs this check in a separate `typecheck` job that acts as a ratchet: the job runs pyright with `--outputjson`, reads `summary.errorCount` and fails only when the count exceeds the baseline stored in the `PYRIGHT_ERROR_BASELINE` environment variable in `.github/workflows/lint.yml` (currently 29). Counts at or below the baseline pass. Lower the baseline as errors get fixed so fixed errors cannot regress; raising the baseline requires an explicit note in the PR.
 
 Run a no-secret protocol smoke test against `partners/config.example.json`. These are the same commands the CI `Protocol Smoke` workflow runs; they exercise stdio startup and JSON-RPC tool discovery only and never call a provider:
 
