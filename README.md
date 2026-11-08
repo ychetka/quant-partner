@@ -51,6 +51,9 @@ tools/
   mcp_smoke.py                    local JSON-RPC smoke client
   fake_openai_server.py           deterministic loopback OpenAI-compatible endpoint
   media_ingest.py                 offline transcript ingest for media-partner
+  visual_adapter.py               optional visual annotations for transcript.json
+  transcript_chunker.py           segment-aligned chunking for oversized transcripts
+  transcript_rag.py               BM25 retrieval index over transcript corpora
   decision_ledger.py              offline append-only decisions.jsonl ledger
 tests/                            stdlib unit tests
 ```
@@ -277,6 +280,41 @@ The uploaded file is ephemeral: the adapter deletes it (best-effort) after the a
 Cost note: the adapter is opt-in and runs one paid Gemini Files-API upload plus one `generateContent` call per uncached transcript; the cache keeps repeat runs free. Model output is parsed defensively - malformed entries are dropped with a stderr warning, and output with no usable JSON array at all fails as `model_output_invalid` without touching the transcript.
 
 Named errors (stderr `ERROR <code>: <message>`, exit 1): `auth_error` (missing or rejected `GEMINI_API_KEY`), `media_not_found`, `upload_failed`, `file_api_error` (status poll or generate call), `quota_exceeded` (HTTP 429 or quota-class failures), `model_output_invalid`, plus the shared `invalid_usage`, `output_write_failed` and schema errors from `media_ingest`.
+
+### Transcript chunking and retrieval
+
+`tools/transcript_chunker.py` and `tools/transcript_rag.py` are two more offline, stdlib-only companions to `media-partner`, for when a `transcript.json` is too large for one `context`/`files` argument or when questions span many transcripts at once.
+
+**Why:** partners have context limits, and ad-hoc splitting destroys the `[mm:ss]` citations the partner's answers rely on. The chunker emits segment-aligned chunks - it never splits a segment mid-text - that keep `t0`/`t1`, the covered `segment_ids` and the `speaker_set`, so every chunk stays citation-backed. The retrieval tool ranks those chunks with deterministic BM25, so a caller can attach only the few relevant chunks to a question instead of a whole corpus.
+
+Usage:
+
+```bash
+# Split a transcript into <=8000-char chunks; writes meeting.chunks.json (0600)
+python3 tools/transcript_chunker.py meeting.json --max-chars 8000
+
+# Print the chunks document instead of writing a sidecar
+python3 tools/transcript_chunker.py meeting.json --stdout
+
+# Build a persistent BM25 index over a directory of transcripts
+python3 tools/transcript_rag.py build transcripts/ --index rag_index.json
+
+# Re-chunk everything instead of reusing unchanged documents
+python3 tools/transcript_rag.py build transcripts/ --index rag_index.json --rebuild
+
+# Ranked JSON hits: path, content_hash, chunk_id, t0/t1, speaker_set, score, snippet
+python3 tools/transcript_rag.py query --index rag_index.json \
+  "what was decided about pricing" --top-k 5
+
+# Ad-hoc query over files without writing an index
+python3 tools/transcript_rag.py query "pricing decision" --ephemeral a.json b.json
+```
+
+Chunking details: `chunk_transcript` accumulates whole segments until the next one would exceed `max_chars`; a single oversized segment becomes its own chunk and is never split. When segments carry non-null `speaker` values the flusher prefers cutting at the last speaker change inside the current group - best-effort, the `max_chars` bound always wins. The optional `*.chunks.json` sidecar stores `{schema_version: 1, source_hash, generator_version, generated_at, chunks}` and is written atomically with mode 0600.
+
+Index details: the index stores `doc_sources` (`{path, content_hash}`), per-document chunks plus `token_count` keyed by `content_hash`, `postings` (`term -> [content_hash, chunk_id, tf]`), `doc_lengths` and `avg_doc_length`. The build is incremental: documents whose `content_hash` is already indexed keep their stored chunks unless `--rebuild` is passed, documents no longer discovered are dropped, and every candidate file is schema-validated - invalid or foreign JSON files are skipped with a stderr warning and never crash the build. When a `<name>.chunks.json` sidecar exists and its `source_hash` matches the transcript's `content_hash` it is reused; otherwise the transcript is chunked on the fly in memory - sidecars are read, never written, by this tool. Tokenization is lowercase alphanumeric runs of 2+ characters with no stemming, so ranking is fully deterministic (BM25 `k1=1.5`, `b=0.75`).
+
+Named errors (stderr `ERROR <code>: <message>`, exit 1): `chunking_error` (invalid or empty source transcript), `rag_index_error` (missing, stale or corrupt index - corruption is reported with the 1-based JSON line or the offending key path), `rag_corpus_empty` (no valid transcripts found), plus the shared `invalid_usage`, `output_write_failed` and `unsupported_schema_version` from `media_ingest`.
 
 ## Decision ledger
 
