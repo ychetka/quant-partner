@@ -30,13 +30,52 @@ jobs:
 
   typecheck:
     runs-on: ubuntu-latest
-    # Non-blocking while the known baseline of pyright errors exists.
-    # Remove continue-on-error once the baseline is fixed.
-    continue-on-error: true
+    env:
+      # Pyright error ratchet: the job fails when the reported error count
+      # EXCEEDS this baseline; counts at or below it pass. Lower the baseline
+      # as errors get fixed so fixed errors cannot regress; raising it
+      # requires an explicit note in the PR.
+      PYRIGHT_ERROR_BASELINE: "29"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       - name: Check types
-        run: uvx --from "pyright[nodejs]==1.1.414" pyright
+        run: |
+          # pyright exits non-zero whenever errors exist; capture the JSON
+          # report anyway so the ratchet check below can parse it.
+          uvx --from "pyright[nodejs]==1.1.414" pyright --outputjson > pyright-report.json || true
+          python3 - <<'PYEOF'
+          import json
+          import os
+          import sys
+
+          try:
+              baseline = int(os.environ["PYRIGHT_ERROR_BASELINE"])
+          except (KeyError, TypeError, ValueError) as exc:
+              print(f"::error::Invalid PYRIGHT_ERROR_BASELINE value: {exc}")
+              sys.exit(1)
+          try:
+              with open("pyright-report.json", encoding="utf-8") as handle:
+                  report = json.load(handle)
+              errors = int(report["summary"]["errorCount"])
+          except (OSError, KeyError, TypeError, ValueError) as exc:
+              print(f"::error::Could not parse pyright JSON report: {exc}")
+              sys.exit(1)
+
+          print(f"Pyright error count: {errors} (baseline: {baseline})")
+          if errors > baseline:
+              print(
+                  f"::error::Pyright reported {errors} errors, which exceeds the "
+                  f"baseline of {baseline}. Fix the new errors, or justify raising "
+                  "PYRIGHT_ERROR_BASELINE in the PR description."
+              )
+              sys.exit(1)
+          if errors < baseline:
+              print(
+                  f"::notice::Pyright error count is below the baseline "
+                  f"({errors} < {baseline}). Consider lowering "
+                  f"PYRIGHT_ERROR_BASELINE to {errors}."
+              )
+          PYEOF
