@@ -51,7 +51,11 @@ jobs:
           import os
           import sys
 
-          baseline = int(os.environ["PYRIGHT_ERROR_BASELINE"])
+          try:
+              baseline = int(os.environ["PYRIGHT_ERROR_BASELINE"])
+          except (KeyError, TypeError, ValueError) as exc:
+              print(f"::error::Invalid PYRIGHT_ERROR_BASELINE value: {exc}")
+              sys.exit(1)
           try:
               with open("pyright-report.json", encoding="utf-8") as handle:
                   report = json.load(handle)
@@ -70,8 +74,8 @@ jobs:
               sys.exit(1)
           if errors < baseline:
               print(
-                  f"Pyright error count is below the baseline ({errors} < "
-                  f"{baseline}). Consider lowering PYRIGHT_ERROR_BASELINE to "
-                  f"{errors}."
+                  f"::notice::Pyright error count is below the baseline "
+                  f"({errors} < {baseline}). Consider lowering "
+                  f"PYRIGHT_ERROR_BASELINE to {errors}."
               )
           PYEOF
