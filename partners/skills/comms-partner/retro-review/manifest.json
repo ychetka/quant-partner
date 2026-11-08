@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "retro-review",
+  "description": "Retrospective review of decision-ledger entries: per-decision outcome marking and adoption-pattern summaries over past partner recommendations.",
+  "when_to_use": "Use to review a slice of decisions.jsonl entries pasted into the request, mark each recorded decision outcome (validated, regretted or pending) with reasoning and summarize adoption patterns by partner and project.",
+  "generation": {
+    "temperature": 0.3
+  },
+  "version": 1
+}

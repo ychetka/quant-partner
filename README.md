@@ -51,6 +51,7 @@ tools/
   mcp_smoke.py                    local JSON-RPC smoke client
   fake_openai_server.py           deterministic loopback OpenAI-compatible endpoint
   media_ingest.py                 offline transcript ingest for media-partner
+  decision_ledger.py              offline append-only decisions.jsonl ledger
 tests/                            stdlib unit tests
 ```
 
@@ -251,6 +252,44 @@ Error contract (stderr `ERROR <code>: <message>`, exit 1):
 | `output_write_failed` | `--output` path not writable. |
 
 Cache policy: transcripts are stored in a bounded cache (`--cache-dir`, default `.cache/media-ingest`) keyed only by `content_hash` - a sha256 over canonicalized segments, never by URL or file path. Entries are 0600 files with a 6-hour TTL (`--cache-ttl-seconds`) and a 256-file bound (`--cache-max-files`); `--no-cache` bypasses it. A hit re-emits the stored transcript with the current input's `source.ref` and a `cache_hit: true` flag. The cache stores transcripts only - never partner questions or answers - and corrupt or tampered entries count as misses.
+
+## Decision ledger
+
+`tools/decision_ledger.py` is an offline, stdlib-only companion to the advisory partners. It keeps an append-only `decisions.jsonl` ledger recording which partner recommendations the orchestrator adopted, modified or rejected - the raw material a `comms-partner` `retro-review` call later works over. It is not part of the MCP server and never calls a provider.
+
+Entry contract (`schema_version` 1, strict - unknown keys and type mismatches are rejected):
+
+- `decision_id`, `project`, `partner`, `recommendation_summary` - non-empty strings.
+- `context_size` (non-negative integer) and/or `context_hash` (`sha256:<64 lowercase hex>`) - each optional on its own, but at least one of the two is required; they fingerprint the context a recommendation was given without storing the context itself.
+- `orchestrator_action` - exactly one of `adopted`, `modified`, `rejected`.
+- `created_at` - an ISO-8601 UTC timestamp ending in `Z`.
+
+Usage:
+
+```bash
+# Append one entry from a JSON file
+python3 tools/decision_ledger.py append --file entry.json
+
+# Append inline; values parse as JSON when possible, else stay raw strings
+python3 tools/decision_ledger.py append \
+  --field decision_id=d-014 --field project=quant-partner \
+  --field partner=strategy-partner --field context_size=4210 \
+  --field recommendation_summary='prefer local ASR over hosted transcription' \
+  --field orchestrator_action=adopted --field created_at=2026-11-08T10:30:00Z \
+  --field schema_version=1
+
+# Validate the whole ledger, then dump entries or a compact summary
+python3 tools/decision_ledger.py read
+python3 tools/decision_ledger.py list
+
+# Validate the ledger file or a single candidate entry
+python3 tools/decision_ledger.py validate
+python3 tools/decision_ledger.py validate --file entry.json
+```
+
+`--ledger PATH` overrides the default `./decisions.jsonl` on every subcommand. The file is created with mode 0600 on first append. The ledger is append-only by construction: `append` writes one newline-terminated JSON line through a single `O_APPEND` write sequence (concurrent appenders never interleave a line), validates the whole existing file first and refuses to write onto a corrupt ledger, and there is no update or delete path anywhere - `read`, `list` and `validate` are read-only.
+
+Error contract (stderr `ERROR <code>: <message>`, exit 1): `invalid_usage`, `entry_schema_invalid` / `unsupported_schema_version`, `ledger_corrupt` (names the 1-based line number, including a truncated or unterminated tail line), `ledger_read_failed` and `ledger_write_failed`.
 
 ## Harness and skills
 

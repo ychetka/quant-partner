@@ -231,6 +231,7 @@ Communication and interface partner for long-running projects through the Gemini
 | Skill | When to use |
 | --- | --- |
 | `communication` | Use for investor updates, stakeholder messaging, founder conversations, interview-style elicitation and anything that needs the project brief as memory. |
+| `retro-review` | Use for a retrospective review of decision-ledger slices: marks each past recommendation validated, regretted or pending with reasoning and summarizes adoption patterns. |
 
 Call it when:
 
@@ -239,6 +240,7 @@ Call it when:
 - You want a Socratic dialog - one focused question at a time - to elicit a decision or articulate a position.
 - You want contradictions between the current question and the project brief flagged.
 - You need the closest thing to long-term project memory: pass the brief every call.
+- You want a retro-review of past partner recommendations: pass a slice of the `decisions.jsonl` ledger (kept by `tools/decision_ledger.py`) in `context` or `files`.
 
 Example (dialog with a context pack):
 
@@ -333,6 +335,7 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | Investor update / stakeholder communication | `comms-partner` | `communication` | `ask_partner` | Pass the context pack in `context` |
 | Founder coaching / elicitation | `comms-partner` | `communication` | `ask_partner_dialog` | Socratic: one focused question at a time |
 | Long-term project memory | `comms-partner` | `communication` | `ask_partner` / `ask_partner_dialog` | Caller-managed context pack every call |
+| Retro-review of past partner recommendations | `comms-partner` | `retro-review` | `ask_partner` | Paste the `decisions.jsonl` slice in `context`; outcome marks are advisory |
 | Org structure / span of control | `org-partner` | `org-design` | `ask_partner` | Mixed human+agent orgs; humans on critical boundaries |
 | Committee / RACI / quorum design | `org-partner` | `operating-model` | `ask_partner` | Decision rituals, gates and incident escalation to the CEO |
 | Role descriptions / hand-off contracts | `org-partner` | `role-architecture` | `ask_partner` | Human and digital-employee JDs; inputs/outputs/SLA |
