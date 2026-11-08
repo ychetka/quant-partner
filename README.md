@@ -234,11 +234,17 @@ python3 tools/media_ingest.py from-youtube 'https://www.youtube.com/watch?v=...'
 python3 tools/media_ingest.py from-web-page 'https://videos.example.com/talks/keynote' \
   --whisper-model /models/ggml-base.bin -o transcript.json
 
+# Same ASR path with speaker turn tagging (needs a tdrz-capable model)
+python3 tools/media_ingest.py from-file meeting.mp4 \
+  --whisper-model /models/ggml-small.en-tdrz.bin --diarize -o transcript.json
+
 # Re-validate an artifact and print its content_hash
 python3 tools/media_ingest.py validate transcript.json
 ```
 
 Every transcript declares `source.transcription_method` and `source.transcription_trust`: `local_asr` and `caller_supplied` map to `self_transcribed`, while `yt_dlp_captions` maps to `platform_captions` - platform-authored or auto-generated captions of unknown quality, explicitly labeled so downstream consumers can weigh them accordingly. `--ref` overrides `source.ref` on every ingest subcommand; `from-file` defaults to the media basename so local paths never reach the artifact, and the URL subcommands default to the URL itself.
+
+Speaker turn tagging: `--diarize` on any ASR path (`from-file` without `--transcript-file`, `from-youtube --asr`, `from-web-page`) passes `--tinydiarize` to whisper-cli, which requires a tdrz-capable model (for example `ggml-small.en-tdrz.bin`) and a whisper.cpp build that supports the flag. When turn tagging works, `segments[].speaker` carries turn-relative labels `S0`, `S1`, ... marking speaker *changes* within that one file. These are turn tags, not speaker identity: they are not stable across files, across runs, or as real-world identities, so media-partner must not read them as "who is speaking". When the binary or model cannot produce turn tags the flag soft-skips: ingest still succeeds with `speaker: null` and a stderr note. `--diarize-required` turns the same gap into a hard `diarization_unavailable` error. Both flags are rejected with `invalid_usage` outside ASR modes (platform captions, `--transcript-file`).
 
 Error contract (stderr `ERROR <code>: <message>`, exit 1):
 
@@ -249,6 +255,7 @@ Error contract (stderr `ERROR <code>: <message>`, exit 1):
 | `asr_unavailable` | whisper.cpp binary missing on `PATH` or not executable. |
 | `no_captions_available` | yt-dlp ran but produced no usable caption file; pass `--transcript-file` or retry with `--asr`. |
 | `no_media_found` | yt-dlp ran but the page yielded no downloadable media. |
+| `diarization_unavailable` | `--diarize-required` was set but the whisper.cpp run produced no speaker-turn tags; turn tagging needs a tdrz-capable model and a build that supports `--tinydiarize`. |
 | `external_tool_error` | External binary timed out or exited non-zero (stderr tail in the hint). |
 | `transcript_format_invalid` | Caller-supplied transcript text matched no supported format, or the input file is not valid UTF-8. |
 | `transcript_schema_invalid` / `unsupported_schema_version` | Artifact failed the schema contract on `validate` or a cache write. |

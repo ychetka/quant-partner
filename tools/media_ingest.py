@@ -51,7 +51,17 @@ Stage 1-6 scope implemented here:
 - ``from-web-page``: ``yt-dlp`` downloads the page's media through its
   generic extractor into a temp dir and the local whisper.cpp path
   transcribes it - ``web_page``/``local_asr``. A page that yields no
-  downloadable media fails loudly as ``NoMediaFound``.
+  downloadable media fails loudly as ``NoMediaFound``;
+- ``--diarize`` on the ASR paths (with ``--diarize-required`` for a
+  hard contract): requests whisper.cpp tinydiarize turn tagging
+  (``--tinydiarize``, which needs a tdrz-capable model). Tagged output
+  maps to turn-relative ``speaker`` labels ``S0``, ``S1``, ... - these
+  are turn-change markers within one file, NEVER speaker identity, and
+  no identity is stable across files or runs. When the binary/model
+  cannot produce turn tags the flag soft-skips to ``speaker: null``
+  with a stderr note; ``--diarize-required`` names that gap
+  ``DiarizationUnavailable`` instead. Both flags are rejected on the
+  non-ASR modes (platform captions, ``--transcript-file``).
 
 Every remote fetch and transcription runs inside a
 ``tempfile.TemporaryDirectory`` workspace, so downloaded media and
@@ -96,6 +106,9 @@ DEFAULT_BINARY_TIMEOUT_SECONDS = 600
 DEFAULT_WHISPER_BINARY = "whisper-cli"
 ENV_WHISPER_BINARY = "WHISPER_CPP_BINARY"
 ENV_WHISPER_MODEL = "WHISPER_CPP_MODEL"
+# whisper.cpp tinydiarize switch: requests per-segment speaker-turn
+# tagging, but only tdrz-capable models can honor it.
+WHISPER_TINYDIARIZE_FLAG = "--tinydiarize"
 DEFAULT_YTDLP_BINARY = "yt-dlp"
 ENV_YTDLP_BINARY = "YT_DLP_BINARY"
 
@@ -115,6 +128,10 @@ _TIMESTAMP_RE = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,6})$")
 # embed inside cue text. A ``<`` that opens neither form (for example
 # ``a < b``) is left untouched.
 _INLINE_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>|<\d{1,3}:\d{2}(?::\d{2})?[.,]\d{1,3}>")
+# whisper.cpp renders tinydiarize turn boundaries as a literal marker
+# inside segment text (``[SPEAKER_TURN]``); some builds emit it with a
+# space instead of the underscore.
+_SPEAKER_TURN_RE = re.compile(r"\[SPEAKER[ _]TURN\]")
 
 _TRANSCRIPT_KEYS = {
     "source",
@@ -192,9 +209,14 @@ class ExternalToolError(IngestError):
 
     code = "external_tool_error"
 
-    def __init__(self, binary: str, message: str, hint: str = "") -> None:
+    def __init__(
+        self, binary: str, message: str, hint: str = "", *, timed_out: bool = False
+    ) -> None:
         super().__init__(message, hint)
         self.binary = binary
+        # A timeout says nothing about flag support: callers that probe
+        # binary capabilities (diarization) must not retry on it.
+        self.timed_out = timed_out
 
 
 class AsrUnavailable(ExternalToolError):
@@ -249,6 +271,25 @@ class NoMediaFound(ExternalToolError):
         hint: str = "check that the page hosts a video yt-dlp can extract",
     ) -> None:
         super().__init__(binary, message, hint)
+
+
+class DiarizationUnavailable(ExternalToolError):
+    """Required speaker turn tagging could not be produced by whisper.cpp.
+
+    Raised only under ``--diarize-required``: with plain ``--diarize``
+    the same gap soft-skips to ``speaker: null`` plus a stderr note.
+    """
+
+    code = "diarization_unavailable"
+
+    def __init__(self, binary: str, hint: str = "") -> None:
+        super().__init__(
+            binary,
+            f"speaker turn tagging unavailable from: {binary}",
+            hint
+            or "turn tagging needs a tdrz-capable model and a whisper.cpp "
+            "build that supports --tinydiarize",
+        )
 
 
 # --- transcript.json schema contract -------------------------------------
@@ -800,7 +841,9 @@ def run_external(
     except FileNotFoundError as e:
         raise missing_error or ExternalToolError(binary, f"binary not found: {binary}") from e
     except subprocess.TimeoutExpired as e:
-        raise ExternalToolError(binary, f"{binary} timed out after {timeout_seconds}s") from e
+        raise ExternalToolError(
+            binary, f"{binary} timed out after {timeout_seconds}s", timed_out=True
+        ) from e
     if proc.returncode != 0:
         tail = " | ".join((proc.stderr or "").strip().splitlines()[-3:])[:300]
         raise ExternalToolError(binary, f"{binary} exited with code {proc.returncode}", tail)
@@ -816,12 +859,28 @@ def _millis(value: Any) -> float | None:
     return round(float(value) / 1000.0, 3)
 
 
-def _segments_from_whisper(payload: Any, binary: str) -> list[dict[str, Any]]:
-    """Map whisper.cpp ``-oj`` JSON output to canonical segments."""
+def _segments_from_whisper(payload: Any, binary: str) -> tuple[list[dict[str, Any]], bool]:
+    """Map whisper.cpp ``-oj`` JSON output to canonical segments.
+
+    Returns ``(segments, turn_tagged)``. With tinydiarize enabled
+    (``--tinydiarize`` plus a tdrz-capable model) whisper.cpp marks
+    turn boundaries two ways: a per-segment ``speaker_turn_next`` flag
+    in the JSON and ``[SPEAKER_TURN]`` markers inside segment text.
+    Both mean "the NEXT segment starts a new turn", so the parser maps
+    them to turn-relative ``speaker`` labels ``S0``, ``S1``, ... -
+    turn-change tags within this one file, never speaker identity -
+    and strips the raw markers out of the text. ``turn_tagged``
+    reports whether the payload carried any tinydiarize signal at all
+    (even an all-``false`` ``speaker_turn_next`` series proves the
+    binary honored the flag); it is how callers detect tdrz-capable
+    output versus an unsupported request.
+    """
     items = payload.get("transcription") if isinstance(payload, dict) else None
     if not isinstance(items, list):
         raise ExternalToolError(binary, f"{binary} output has no 'transcription' array")
     segments = []
+    turn = 0
+    turn_tagged = False
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -838,13 +897,27 @@ def _segments_from_whisper(payload: Any, binary: str) -> list[dict[str, Any]]:
                     t1 = _parse_timestamp(str(stamps.get("to")))
                 except (TranscriptFormatError, TypeError):
                     t0 = t1 = None
-        text = _normalize_text(item.get("text", ""))
-        if not text:
-            continue
-        segments.append({"t0": t0, "t1": t1, "speaker": None, "text": text})
+        raw_text = str(item.get("text", ""))
+        boundary = bool(item.get("speaker_turn_next")) or bool(_SPEAKER_TURN_RE.search(raw_text))
+        # An explicit speaker_turn_next key (even false) proves the
+        # run honored tinydiarize; markers prove it by themselves.
+        if "speaker_turn_next" in item or boundary:
+            turn_tagged = True
+        text = _normalize_text(_SPEAKER_TURN_RE.sub("", raw_text))
+        if text:
+            segments.append({"t0": t0, "t1": t1, "speaker": f"S{turn}", "text": text})
+        # A boundary after this segment - or on a textless segment -
+        # still advances the turn counter for the next one.
+        if boundary:
+            turn += 1
     if not segments:
         raise ExternalToolError(binary, f"{binary} returned an empty transcription")
-    return segments
+    if not turn_tagged:
+        # No tinydiarize signal: speakers stay null rather than
+        # pretending every segment belongs to one tagged S0 turn.
+        for segment in segments:
+            segment["speaker"] = None
+    return segments, turn_tagged
 
 
 def transcribe_local(
@@ -854,11 +927,21 @@ def transcribe_local(
     model_path: str,
     timeout_seconds: int,
     work_dir: Path,
+    diarize: bool = False,
+    diarize_required: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the whisper.cpp CLI on a local media file; return canonical segments.
 
     ``AsrUnavailable`` names the binary when it cannot be executed, so
     the ASR path fails closed instead of silently degrading.
+
+    ``diarize`` asks for tinydiarize turn tagging: ``--tinydiarize``
+    is passed to the binary (a tdrz-capable model is required) and any
+    turn tags become turn-relative ``speaker`` labels - change markers
+    within this file, never identity. Tagging that proves unsupported
+    soft-skips to ``speaker: null`` with a stderr note;
+    ``diarize_required`` upgrades the same gap to a named
+    ``DiarizationUnavailable``.
     """
     if shutil.which(binary) is None:
         raise AsrUnavailable(binary)
@@ -873,7 +956,24 @@ def transcribe_local(
         "-of",
         str(out_base),
     ]
-    run_external(argv, timeout_seconds=timeout_seconds, missing_error=AsrUnavailable(binary))
+    want_turns = diarize or diarize_required
+    try:
+        run_external(
+            [*argv, WHISPER_TINYDIARIZE_FLAG] if want_turns else argv,
+            timeout_seconds=timeout_seconds,
+            missing_error=AsrUnavailable(binary),
+        )
+    except ExternalToolError as e:
+        # A missing binary stays AsrUnavailable and a timeout is never
+        # a flag-support question: both propagate unchanged.
+        if not want_turns or isinstance(e, AsrUnavailable) or e.timed_out:
+            raise
+        # The flagged run failed - possibly because this whisper.cpp
+        # build does not know --tinydiarize. One retry without the flag
+        # separates a diarization gap (the plain retry succeeds, no
+        # turn tags follow) from a real transcription failure (the
+        # retry raises its own error).
+        run_external(argv, timeout_seconds=timeout_seconds, missing_error=AsrUnavailable(binary))
     out_json = out_base.with_suffix(".json")
     try:
         payload = json.loads(out_json.read_text(encoding="utf-8"))
@@ -881,7 +981,17 @@ def transcribe_local(
         raise ExternalToolError(
             binary, f"{binary} produced no readable JSON transcript", str(e)[:200]
         ) from e
-    return _segments_from_whisper(payload, binary)
+    segments, turn_tagged = _segments_from_whisper(payload, binary)
+    if want_turns and not turn_tagged:
+        if diarize_required:
+            raise DiarizationUnavailable(binary)
+        print(
+            f"note: {binary} produced no speaker-turn tags - speaker fields stay "
+            f"null (turn tagging needs a tdrz-capable model and a whisper.cpp "
+            f"build that supports {WHISPER_TINYDIARIZE_FLAG})",
+            file=sys.stderr,
+        )
+    return segments
 
 
 # --- remote ingest via yt-dlp -------------------------------------------------
@@ -1020,12 +1130,14 @@ def _add_whisper_args(
     parser: argparse.ArgumentParser,
     model_help: str,
     rejected_with: str | None = None,
+    diarize_rejected: str | None = None,
 ) -> None:
     # SUPPRESS defaults keep an explicitly-passed flag distinguishable
     # from an unset one: _reject_inapplicable_flags can then reject a
     # flag the selected mode never uses instead of silently ignoring
     # it. _resolve_binary_args applies env/default fallback afterwards.
     note = f"; rejected when {rejected_with} is used" if rejected_with else ""
+    dnote = f"; rejected when {diarize_rejected} is used" if diarize_rejected else ""
     parser.add_argument(
         "--whisper-binary",
         default=argparse.SUPPRESS,
@@ -1035,6 +1147,26 @@ def _add_whisper_args(
         "--whisper-model",
         default=argparse.SUPPRESS,
         help=model_help + note,
+    )
+    parser.add_argument(
+        "--diarize",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            f"ASR mode: request whisper.cpp speaker turn tagging "
+            f"({WHISPER_TINYDIARIZE_FLAG}; needs a tdrz-capable model); "
+            f"unsupported tagging soft-skips to speaker: null with a "
+            f"stderr note{dnote}"
+        ),
+    )
+    parser.add_argument(
+        "--diarize-required",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "like --diarize, but unavailable turn tagging is a hard "
+            f"diarization_unavailable error{dnote}"
+        ),
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -1083,7 +1215,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "caller-supplied transcript (plain text, SRT, VTT or loose JSON); "
             "skips ASR and marks transcription_method caller_supplied; "
-            "--whisper-* flags are rejected in this mode"
+            "--whisper-* and --diarize* flags are rejected in this mode"
         ),
     )
     _add_ref_arg(
@@ -1095,6 +1227,7 @@ def _build_parser() -> argparse.ArgumentParser:
         local,
         f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required for ASR",
         rejected_with="--transcript-file",
+        diarize_rejected="--transcript-file",
     )
     _add_output_and_cache_args(local)
 
@@ -1116,7 +1249,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "caller-supplied transcript (plain text, SRT, VTT or loose JSON); "
             "skips yt-dlp and marks transcription_method caller_supplied; "
-            "--sub-langs and binary-override flags are rejected in this mode"
+            "--sub-langs, --diarize* and binary-override flags are rejected "
+            "in this mode"
         ),
     )
     youtube.add_argument(
@@ -1134,6 +1268,7 @@ def _build_parser() -> argparse.ArgumentParser:
         youtube,
         f"whisper.cpp model file (env {ENV_WHISPER_MODEL}); required with --asr",
         rejected_with="--transcript-file",
+        diarize_rejected="captions mode or --transcript-file",
     )
     _add_output_and_cache_args(youtube)
 
@@ -1255,6 +1390,10 @@ _BINARY_FLAG_DESTS = {
     "ytdlp_binary": "--ytdlp-binary",
 }
 _CAPTION_FLAG_DESTS = {"sub_langs": "--sub-langs"}
+_DIARIZE_FLAG_DESTS = {
+    "diarize": "--diarize",
+    "diarize_required": "--diarize-required",
+}
 
 
 def _reject_inapplicable_flags(args: argparse.Namespace, flags: dict[str, str], mode: str) -> None:
@@ -1281,6 +1420,10 @@ def _resolve_binary_args(args: argparse.Namespace) -> None:
         args.ytdlp_binary = os.environ.get(ENV_YTDLP_BINARY, DEFAULT_YTDLP_BINARY)
     if getattr(args, "sub_langs", None) is None:
         args.sub_langs = None
+    if getattr(args, "diarize", None) is None:
+        args.diarize = False
+    if getattr(args, "diarize_required", None) is None:
+        args.diarize_required = False
 
 
 def _resolve_cache(args: argparse.Namespace) -> TranscriptCache | None:
@@ -1321,6 +1464,8 @@ def _transcribe_via_download(
             model_path=model_path,
             timeout_seconds=args.timeout_seconds,
             work_dir=work,
+            diarize=args.diarize or args.diarize_required,
+            diarize_required=args.diarize_required,
         )
 
 
@@ -1331,7 +1476,9 @@ def _cmd_from_file(args: argparse.Namespace) -> int:
     if not media.is_file():
         raise UsageError(f"media file not found: {media}")
     if args.transcript_file:
-        _reject_inapplicable_flags(args, _BINARY_FLAG_DESTS, "--transcript-file")
+        _reject_inapplicable_flags(
+            args, {**_BINARY_FLAG_DESTS, **_DIARIZE_FLAG_DESTS}, "--transcript-file"
+        )
     _resolve_binary_args(args)
     if args.transcript_file:
         segments = _read_caller_transcript(args.transcript_file)
@@ -1345,6 +1492,8 @@ def _cmd_from_file(args: argparse.Namespace) -> int:
                 model_path=model,
                 timeout_seconds=args.timeout_seconds,
                 work_dir=Path(work_dir),
+                diarize=args.diarize or args.diarize_required,
+                diarize_required=args.diarize_required,
             )
         method = "local_asr"
     # The artifact may reach a remote partner: source.ref carries only
@@ -1364,10 +1513,14 @@ def _cmd_from_youtube(args: argparse.Namespace) -> int:
         raise UsageError("--asr and --transcript-file are mutually exclusive")
     if args.transcript_file:
         _reject_inapplicable_flags(
-            args, {**_BINARY_FLAG_DESTS, **_CAPTION_FLAG_DESTS}, "--transcript-file"
+            args,
+            {**_BINARY_FLAG_DESTS, **_CAPTION_FLAG_DESTS, **_DIARIZE_FLAG_DESTS},
+            "--transcript-file",
         )
     elif args.asr:
         _reject_inapplicable_flags(args, _CAPTION_FLAG_DESTS, "--asr")
+    else:
+        _reject_inapplicable_flags(args, _DIARIZE_FLAG_DESTS, "captions mode without --asr")
     _resolve_binary_args(args)
     url = _resolve_url(args)
     if args.transcript_file:

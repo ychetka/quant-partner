@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1348,6 +1349,348 @@ class FromYoutubeCliTest(unittest.TestCase):
             self.assertEqual(out, "")
             self.assertIn("asr_unavailable", err)
             run.assert_not_called()
+
+
+class DiarizeTest(unittest.TestCase):
+    """--diarize / --diarize-required on the whisper.cpp ASR paths."""
+
+    URL = "https://www.youtube.com/watch?v=demo123"
+
+    # speaker_turn_next on a segment - and a [SPEAKER_TURN] marker in
+    # its text - both mean "the NEXT segment starts a new turn".
+    TAGGED_PAYLOAD: ClassVar[dict] = {
+        "transcription": [
+            {"offsets": {"from": 0, "to": 1500}, "text": " hello "},
+            {"offsets": {"from": 1500, "to": 3000}, "text": " world [SPEAKER_TURN]"},
+            {
+                "offsets": {"from": 3000, "to": 4500},
+                "text": " again ",
+                "speaker_turn_next": True,
+            },
+            {"offsets": {"from": 4500, "to": 6000}, "text": " bye "},
+        ]
+    }
+    # An all-false speaker_turn_next series still proves the binary
+    # honored tinydiarize: one S0 turn (a monologue), not a soft-skip.
+    MONOLOGUE_PAYLOAD: ClassVar[dict] = {
+        "transcription": [
+            {
+                "offsets": {"from": 0, "to": 1000},
+                "text": " one ",
+                "speaker_turn_next": False,
+            },
+            {
+                "offsets": {"from": 1000, "to": 2000},
+                "text": " two ",
+                "speaker_turn_next": False,
+            },
+        ]
+    }
+
+    def _run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.object(sys, "stdout", out),
+            patch.object(sys, "stderr", err),
+        ):
+            code = mi.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def _media_and_model(tmp):
+        media = Path(tmp) / "meeting.wav"
+        media.write_bytes(b"fake audio")
+        model = Path(tmp) / "model.bin"
+        model.write_bytes(b"fake model")
+        return media, model
+
+    @staticmethod
+    def _whisper_fake(payload, *, fail_flagged=0, calls=None):
+        """subprocess.run stand-in for whisper-cli invocations.
+
+        ``fail_flagged`` (an exit code) makes runs carrying
+        --tinydiarize fail, simulating a binary that does not know the
+        flag; the plain retry still writes ``payload``.
+        """
+
+        def fake_run(argv, **kwargs):
+            assert kwargs.get("shell") is not True
+            if calls is not None:
+                calls.append(list(argv))
+            if mi.WHISPER_TINYDIARIZE_FLAG in argv and fail_flagged:
+                return subprocess.CompletedProcess(argv, fail_flagged, "", "unknown option")
+            out_base = Path(argv[argv.index("-of") + 1])
+            out_base.with_suffix(".json").write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        return fake_run
+
+    def _run_from_file(self, tmp, extra, fake):
+        media, model = self._media_and_model(tmp)
+        out_path = Path(tmp) / "t.json"
+        with (
+            patch.object(mi.shutil, "which", side_effect=_which_all),
+            patch.object(mi.subprocess, "run", side_effect=fake),
+        ):
+            code, out, err = self._run_main(
+                [
+                    "from-file",
+                    str(media),
+                    "--whisper-model",
+                    str(model),
+                    *extra,
+                    "--no-cache",
+                    "-o",
+                    str(out_path),
+                ]
+            )
+        return code, out, err, out_path
+
+    def test_diarize_passes_tinydiarize_flag_to_whisper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+            code, _, err, _ = self._run_from_file(
+                tmp,
+                ["--diarize"],
+                self._whisper_fake(_fake_whisper_payload(), calls=calls),
+            )
+            self.assertEqual(code, 0, err)
+            (whisper_argv,) = calls
+            self.assertIn("--tinydiarize", whisper_argv)
+            self.assertEqual(whisper_argv[0], "whisper-cli")
+
+    def test_turn_tags_become_speakers_and_strip_from_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, out_path = self._run_from_file(
+                tmp, ["--diarize"], self._whisper_fake(self.TAGGED_PAYLOAD)
+            )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual(
+                [(s["speaker"], s["text"]) for s in transcript["segments"]],
+                [("S0", "hello"), ("S0", "world"), ("S1", "again"), ("S2", "bye")],
+            )
+            # Tags were found: no soft-skip note.
+            self.assertNotIn("speaker-turn", err)
+
+    def test_monologue_turn_flags_still_count_as_tagged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, out_path = self._run_from_file(
+                tmp, ["--diarize"], self._whisper_fake(self.MONOLOGUE_PAYLOAD)
+            )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual([s["speaker"] for s in transcript["segments"]], ["S0", "S0"])
+            self.assertNotIn("speaker-turn", err)
+
+    def test_no_turn_tags_soft_skips_with_stderr_note(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, _, err, out_path = self._run_from_file(
+                tmp, ["--diarize"], self._whisper_fake(_fake_whisper_payload())
+            )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            # Soft-skip: ingest still completes with null speakers and
+            # a note explaining the missing tdrz capability.
+            self.assertEqual([s["speaker"] for s in transcript["segments"]], [None])
+            self.assertIn("speaker-turn", err)
+            self.assertIn("tdrz", err)
+
+    def test_diarize_required_no_tags_is_named_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+            code, out, err, _ = self._run_from_file(
+                tmp,
+                ["--diarize-required"],
+                self._whisper_fake(_fake_whisper_payload(), calls=calls),
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("diarization_unavailable", err)
+            self.assertIn("tdrz", err)
+            # --diarize-required implies the flag on the whisper argv.
+            (whisper_argv,) = calls
+            self.assertIn("--tinydiarize", whisper_argv)
+
+    def test_unsupported_flag_soft_skips_after_plain_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+            code, _, err, out_path = self._run_from_file(
+                tmp,
+                ["--diarize"],
+                self._whisper_fake(_fake_whisper_payload(), fail_flagged=2, calls=calls),
+            )
+            self.assertEqual(code, 0, err)
+            # Flagged run failed; the plain retry produced the artifact.
+            self.assertEqual(len(calls), 2)
+            self.assertIn("--tinydiarize", calls[0])
+            self.assertNotIn("--tinydiarize", calls[1])
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual([s["speaker"] for s in transcript["segments"]], [None])
+            self.assertIn("speaker-turn", err)
+
+    def test_unsupported_flag_required_is_named_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+            code, out, err, _ = self._run_from_file(
+                tmp,
+                ["--diarize-required"],
+                self._whisper_fake(_fake_whisper_payload(), fail_flagged=2, calls=calls),
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("diarization_unavailable", err)
+            self.assertEqual(len(calls), 2)
+
+    def test_real_transcription_failure_is_not_a_diarization_error(self):
+        def always_fail(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 2, "", "boom")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # The plain retry fails too: a genuine transcription failure
+            # must surface as external_tool_error, never soft-skip.
+            code, out, err, _ = self._run_from_file(tmp, ["--diarize"], always_fail)
+            self.assertEqual(code, 1)
+            self.assertEqual(out, "")
+            self.assertIn("external_tool_error", err)
+            self.assertNotIn("diarization_unavailable", err)
+
+    def test_diarize_rejected_on_transcript_file_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media, _ = self._media_and_model(tmp)
+            transcript_file = Path(tmp) / "t.srt"
+            transcript_file.write_text(SRT, encoding="utf-8")
+            for argv, flag in (
+                (
+                    [
+                        "from-file",
+                        str(media),
+                        "--transcript-file",
+                        str(transcript_file),
+                        "--diarize",
+                    ],
+                    "--diarize",
+                ),
+                (
+                    [
+                        "from-file",
+                        str(media),
+                        "--transcript-file",
+                        str(transcript_file),
+                        "--diarize-required",
+                    ],
+                    "--diarize-required",
+                ),
+                (
+                    [
+                        "from-youtube",
+                        self.URL,
+                        "--transcript-file",
+                        str(transcript_file),
+                        "--diarize",
+                    ],
+                    "--diarize",
+                ),
+            ):
+                with self.subTest(flag=flag, argv=argv[0]):
+                    code, out, err = self._run_main([*argv, "--no-cache"])
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out, "")
+                    self.assertIn("invalid_usage", err)
+                    self.assertIn(flag, err)
+
+    def test_diarize_rejected_on_captions_mode(self):
+        for flag in ("--diarize", "--diarize-required"):
+            with self.subTest(flag=flag):
+                code, out, err = self._run_main(["from-youtube", self.URL, flag, "--no-cache"])
+                self.assertEqual(code, 1)
+                self.assertEqual(out, "")
+                self.assertIn("invalid_usage", err)
+                self.assertIn(flag, err)
+                self.assertIn("--asr", err)
+
+    def test_youtube_asr_diarize_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            out_path = Path(tmp) / "t.json"
+            calls = []
+            plain = _fake_run_factory()
+
+            def fake_run(argv, **kwargs):
+                calls.append(list(argv))
+                if "-of" in argv:
+                    out_base = Path(argv[argv.index("-of") + 1])
+                    out_base.with_suffix(".json").write_text(
+                        json.dumps(self.TAGGED_PAYLOAD), encoding="utf-8"
+                    )
+                    return subprocess.CompletedProcess(argv, 0, "", "")
+                return plain(argv, **kwargs)
+
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=fake_run),
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-youtube",
+                        self.URL,
+                        "--asr",
+                        "--whisper-model",
+                        str(model),
+                        "--diarize",
+                        "--no-cache",
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual(
+                [s["speaker"] for s in transcript["segments"]],
+                ["S0", "S0", "S1", "S2"],
+            )
+            ytdlp_argv, whisper_argv = calls
+            self.assertEqual(ytdlp_argv[0], "yt-dlp")
+            self.assertIn("--tinydiarize", whisper_argv)
+
+    def test_web_page_diarize_soft_skip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.bin"
+            model.write_bytes(b"fake model")
+            out_path = Path(tmp) / "t.json"
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                calls.append(list(argv))
+                return _fake_run_factory()(argv, **kwargs)
+
+            with (
+                patch.object(mi.shutil, "which", side_effect=_which_all),
+                patch.object(mi.subprocess, "run", side_effect=fake_run),
+            ):
+                code, _, err = self._run_main(
+                    [
+                        "from-web-page",
+                        "https://videos.example.invalid/talk",
+                        "--whisper-model",
+                        str(model),
+                        "--diarize",
+                        "--no-cache",
+                        "-o",
+                        str(out_path),
+                    ]
+                )
+            self.assertEqual(code, 0, err)
+            _, whisper_argv = calls
+            self.assertIn("--tinydiarize", whisper_argv)
+            transcript = json.loads(out_path.read_text(encoding="utf-8"))
+            mi.validate(transcript)
+            self.assertEqual([s["speaker"] for s in transcript["segments"]], [None])
+            self.assertIn("speaker-turn", err)
 
 
 class DownloadCaptionsTest(unittest.TestCase):
