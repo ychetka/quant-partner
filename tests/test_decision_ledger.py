@@ -4,6 +4,7 @@
 import importlib.util
 import io
 import json
+import os
 import stat
 import sys
 import tempfile
@@ -182,6 +183,43 @@ class LedgerAppendReadTest(unittest.TestCase):
             dl.append_entry(path, _entry())
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def test_append_forces_0600_on_preexisting_permissive_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decisions.jsonl"
+            # A ledger created elsewhere may carry a permissive mode;
+            # appending must still leave the file at 0600.
+            path.write_text(_line(_entry()), encoding="utf-8")
+            os.chmod(path, 0o644)
+            dl.append_entry(path, _entry(decision_id="d-002"))
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(len(dl.read_ledger(path)), 2)
+
+    def test_append_issues_exactly_one_os_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decisions.jsonl"
+            calls = []
+            real_write = os.write
+
+            def counting_write(fd, data):
+                calls.append(len(data))
+                return real_write(fd, data)
+
+            with patch("os.write", counting_write):
+                dl.append_entry(path, _entry())
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(dl.read_ledger(path), [_entry()])
+
+    def test_append_short_write_raises_write_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decisions.jsonl"
+            # A short write must fail named instead of looping into a
+            # second os.write that could interleave with other appenders.
+            with patch("os.write", return_value=1):
+                with self.assertRaises(dl.LedgerWriteError) as ctx:
+                    dl.append_entry(path, _entry())
+            self.assertEqual(ctx.exception.code, "ledger_write_failed")
+            self.assertIn("short write", str(ctx.exception))
+
     def test_multi_append_read_returns_all_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "decisions.jsonl"
@@ -346,6 +384,14 @@ class FieldParsingTest(unittest.TestCase):
     def test_field_json_quoted_string(self):
         key, value = dl._parse_field('project="42"')
         self.assertEqual((key, value), ("project", "42"))
+
+    def test_field_key_and_value_whitespace_stripped(self):
+        key, value = dl._parse_field("project = quant-partner ")
+        self.assertEqual((key, value), ("project", "quant-partner"))
+        key, value = dl._parse_field("context_size= 128 ")
+        self.assertEqual((key, value), ("context_size", 128))
+        key, value = dl._parse_field(' summary = " spaced " ')
+        self.assertEqual((key, value), ("summary", " spaced "))
 
 
 class CliTest(unittest.TestCase):

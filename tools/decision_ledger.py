@@ -27,9 +27,9 @@ rejects every type mismatch and reports failures as named errors with a
 stable ``code`` plus a remediation hint.
 
 Append-only guarantee: ``append`` writes one newline-terminated JSON
-line through a single ``O_APPEND`` ``os.open`` plus ``os.write``
-sequence, so concurrent appenders never interleave a line. The file is
-created with mode 0600 on first append. No code path updates, truncates
+line through a single ``O_APPEND`` ``os.open`` plus exactly one
+``os.write``, so concurrent appenders never interleave a line. The file
+is forced to mode 0600 on every append. No code path updates, truncates
 or deletes existing bytes: ``read``, ``list`` and ``validate`` never
 write, and ``append`` validates the whole existing file first and
 refuses to write onto a corrupt ledger - including a tail line left
@@ -258,13 +258,17 @@ def append_entry(path: Path, entry: dict[str, Any]) -> None:
     """Validate ``entry`` then append it as one JSON line; never rewrites.
 
     The entry is serialized to a single newline-terminated line and
-    written through one ``O_APPEND`` ``os.open`` followed by ``os.write``
-    calls: on ``O_APPEND`` each write lands at the current end of file,
-    so concurrent appenders can never interleave inside a line. A
-    non-existent file is created with mode 0600 (an existing file keeps
-    its mode). When the file already exists it is validated first -
-    appending onto a corrupt ledger is refused so a bad line can never
-    silently absorb a new entry.
+    written through one ``O_APPEND`` ``os.open`` followed by exactly one
+    ``os.write`` of the whole line: on ``O_APPEND`` that write lands at
+    the current end of file, so concurrent appenders can never
+    interleave inside a line. A short write raises ``LedgerWriteError``
+    rather than retrying in a loop, because a second write could
+    interleave with another appender's line. The file mode is forced to
+    0600 on the open descriptor: the ``os.open`` mode applies only to a
+    newly created file, while an existing file keeps its mode. When the
+    file already exists it is validated first - appending onto a
+    corrupt ledger is refused so a bad line can never silently absorb
+    a new entry.
     """
     validate_entry(entry)
     if path.exists():
@@ -273,9 +277,18 @@ def append_entry(path: Path, entry: dict[str, Any]) -> None:
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            view = memoryview(data)
-            while view:
-                view = view[os.write(fd, view) :]
+            # The O_CREAT mode applies only when the file is new; an
+            # existing file keeps its mode, so force 0600 on the open
+            # descriptor unconditionally.
+            os.fchmod(fd, 0o600)
+            # Entries are small single JSON lines: issue exactly one
+            # write of the complete line, never a retry loop.
+            written = os.write(fd, data)
+            if written != len(data):
+                raise LedgerWriteError(
+                    f"short write to ledger: {written} of {len(data)} bytes",
+                    "the ledger tail may be truncated; restore it from a backup",
+                )
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -307,6 +320,7 @@ def _parse_field(pair: str) -> tuple[str, Any]:
     key = key.strip()
     if not key:
         raise UsageError(f"--field expects KEY=VALUE, got {pair!r}")
+    raw = raw.strip()
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
