@@ -383,6 +383,8 @@ Example:
 
 Boundary notes: analyzes transcripts only - it never watches video and never listens to audio, and says so. Speaker identity is reported as unknown when the transcript's speaker field is null. Every moment-bound claim needs a [mm:ss] citation; oversized transcripts are the caller's responsibility to chunk and nothing is silently truncated. The transcript itself may carry automated-transcription errors and is treated as untrusted caller-supplied content.
 
+Visual claims arrive only indirectly: the optional offline adapter `tools/visual_adapter.py` can enrich a transcript's `annotations[]` with timestamped visual observations (Gemini Files API, marked `source: "gemini-files-api"`). The partner reports them strictly with attribution - "per visual analysis" / "the visual adapter reports" - and never as its own perception; with an empty or absent `annotations[]` it has no visual information at all and says so.
+
 Honest capability: transcript provenance is labeled, not equalized. A `platform_captions` trust flag means the text came from third-party platform captions fetched by `yt-dlp` - quality is unknown and can include auto-caption errors; `self_transcribed` means local whisper.cpp ASR ran on the caller's machine or a caller-supplied transcript was normalized. ASR is local-only: no hosted transcription service is ever invoked, so accuracy is bounded by the local whisper.cpp model the caller provides, and the partner can only analyze whatever text actually arrived.
 
 ## text-quality-partner

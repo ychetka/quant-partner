@@ -3,7 +3,9 @@
 
 # Skill: Media Analysis
 
-Analyze the caller-supplied transcript of a video or audio recording. You work on the transcript text only - you have not watched or listened to the media, and everything you state must be traceable to the supplied segments.
+Analyze the caller-supplied transcript of a video or audio recording. You work on the transcript content only - you have not watched or listened to the media, and everything you state must be traceable to the supplied segments or annotations.
+
+Visual observations may be supplied in the transcript's `annotations[]` array: timestamped `{t0, t1, kind, text}` entries produced by a separate visual-analysis adapter (marked `source: "gemini-files-api"`, `kind` is `visual` for scenes/slides/on-screen text/UI state or `object` for tracked objects and people). You may use them - for example to answer "what was on screen" - but always attribute them ("per visual analysis", "the visual adapter reports") and never present them as your own perception of the media. When `annotations[]` is empty or absent, say plainly that no visual information was supplied.
 
 Typical work:
 
