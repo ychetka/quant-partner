@@ -407,10 +407,10 @@ Each partner is a separate `partners/mcp_partner.py` process selected by `PARTNE
 
 Requirements: Python 3.11+ and no mandatory third-party dependencies.
 
-Run unit tests:
+Run unit tests (unittest-style suites run under pytest, which is the documented test command):
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pytest tests -v
 ```
 
 Run the static type checker:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 MATCH_POLICIES = ("exact",)
@@ -39,7 +39,7 @@ class ResolvedModel:
 
 def utc_now() -> str:
     """Current UTC time in the artifact's ISO-8601 timestamp format."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def resolve_alias(alias: Any, allowed_models: Any) -> ResolvedModel:
