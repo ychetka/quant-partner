@@ -3,7 +3,7 @@
 # type: fix | feat | refactor | chore | docs
 type: fix
 # scope: module/subsystem touched (server, backends, review, partners,
-# tools, docs, ci)
+# tools, tests, docs, ci)
 scope: tools
 user_visible: false
 breaking: false

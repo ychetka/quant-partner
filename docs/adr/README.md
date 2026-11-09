@@ -10,7 +10,7 @@ with a new ADR, never edit history).
 - `.changes` entry `breaking: true` - anything a consumer must adapt to
 - A refactor spanning two or more modules - the `scope` vocabulary
   in `.changes/README.md` (`server`, `backends`, `review`, `partners`,
-  `tools`, `docs`, `ci`)
+  `tools`, `tests`, `docs`, `ci`)
 
 Everything else (`fix`, `docs`, `chore`, single-module work) is covered
 by the `.changes` file itself - that file IS the micro-ADR, so its
