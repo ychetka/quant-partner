@@ -86,6 +86,10 @@ def request_json(
             return json.loads(res.read() or b"{}")
     except PartnerError:
         raise
+    # JSONDecodeError is a ValueError subclass, so it must be handled
+    # before the broader ValueError clause below.
+    except json.JSONDecodeError as e:
+        raise PartnerError("backend_error", "backend returned malformed JSON") from e
     except (ValueError, UnicodeError) as e:
         raise PartnerError("invalid_config", "invalid HTTP request header or URL value") from e
     except urllib.error.HTTPError as e:
@@ -97,8 +101,6 @@ def request_json(
     except urllib.error.URLError as e:
         reason = sanitize(getattr(e, "reason", e), secrets)
         raise PartnerError("partner_unreachable", f"network error: {reason}") from e
-    except json.JSONDecodeError as e:
-        raise PartnerError("backend_error", "backend returned malformed JSON") from e
 
 
 def get_json(url: str, **kwargs: Any) -> dict[str, Any]:

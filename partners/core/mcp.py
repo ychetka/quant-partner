@@ -42,7 +42,8 @@ def handle_message(server: ToolServer, msg: dict[str, Any]) -> None:
         return
     rid = msg.get("id")
     method = str(msg.get("method", ""))
-    params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+    params_raw = msg.get("params")
+    params = params_raw if isinstance(params_raw, dict) else {}
     if method == "initialize":
         _result(
             rid,
@@ -60,7 +61,8 @@ def handle_message(server: ToolServer, msg: dict[str, Any]) -> None:
         _result(rid, {"tools": server.tools()})
     elif method == "tools/call":
         name = str(params.get("name", ""))
-        arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        arguments_raw = params.get("arguments")
+        arguments = arguments_raw if isinstance(arguments_raw, dict) else {}
         try:
             text = server.call_tool(name, arguments)
             _result(rid, {"content": [{"type": "text", "text": text}]})

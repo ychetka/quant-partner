@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Alexandr Varenic / ychetka.
 # SPDX-License-Identifier: MIT
+import http.client
 import importlib.util
+import io
 import json
 import socket
 import sys
@@ -10,7 +12,6 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,25 +40,40 @@ FAKE = _load_fake_server_module()
 
 class BackendHttpTest(unittest.TestCase):
     def test_cross_origin_redirect_is_rejected(self):
-        req = SimpleNamespace(full_url="https://api.githubcopilot.com/models")
+        req = urllib.request.Request("https://api.githubcopilot.com/models")
         with self.assertRaises(PartnerError) as ctx:
             _SafeRedirectHandler().redirect_request(
-                req, None, 302, "Found", {}, "https://example.com/models"
+                req,
+                io.BytesIO(b""),
+                302,
+                "Found",
+                http.client.HTTPMessage(),
+                "https://example.com/models",
             )
         self.assertEqual(ctx.exception.code, "partner_unreachable")
 
     def test_relative_cross_origin_redirect_is_rejected(self):
-        req = SimpleNamespace(full_url="https://api.githubcopilot.com/models")
+        req = urllib.request.Request("https://api.githubcopilot.com/models")
         with self.assertRaises(PartnerError):
             _SafeRedirectHandler().redirect_request(
-                req, None, 302, "Found", {}, "//example.com/models"
+                req,
+                io.BytesIO(b""),
+                302,
+                "Found",
+                http.client.HTTPMessage(),
+                "//example.com/models",
             )
 
     def test_https_to_http_redirect_is_rejected(self):
-        req = SimpleNamespace(full_url="https://api.githubcopilot.com/models")
+        req = urllib.request.Request("https://api.githubcopilot.com/models")
         with self.assertRaises(PartnerError):
             _SafeRedirectHandler().redirect_request(
-                req, None, 302, "Found", {}, "http://api.githubcopilot.com/models"
+                req,
+                io.BytesIO(b""),
+                302,
+                "Found",
+                http.client.HTTPMessage(),
+                "http://api.githubcopilot.com/models",
             )
 
     def test_invalid_auth_header_error_does_not_leak_secret(self):

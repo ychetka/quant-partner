@@ -15,7 +15,8 @@ from .base import CompletionResult
 
 class OpenAICompatibleBackend:
     def __init__(self, auth: dict[str, Any], options: dict[str, Any], timeout: int) -> None:
-        openai = options.get("openai") if isinstance(options.get("openai"), dict) else {}
+        openai_raw = options.get("openai")
+        openai = openai_raw if isinstance(openai_raw, dict) else {}
         self.base_url = str(openai.get("base_url", "")).rstrip("/")
         self.api_key = str(auth.get("api_key", ""))
         self.timeout = timeout
