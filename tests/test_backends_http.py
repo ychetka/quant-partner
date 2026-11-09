@@ -84,6 +84,17 @@ class BackendHttpTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "invalid_config")
         self.assertNotIn("secret", ctx.exception.to_text())
 
+    def test_malformed_response_json_maps_to_backend_error(self):
+        # Regression pin for the except ordering in core.http.request_json:
+        # JSONDecodeError is a ValueError subclass, so a malformed response
+        # body must classify as backend_error, never invalid_config.
+        with (
+            patch("core.http._OPENER.open", return_value=io.BytesIO(b"<html>not json</html>")),
+            self.assertRaises(PartnerError) as ctx,
+        ):
+            post_json("https://example.com", {})
+        self.assertEqual(ctx.exception.code, "backend_error")
+
     def test_copilot_model_cache_checks_session_first(self):
         backend = CopilotDirectBackend({"github_oauth_token": "oauth"}, {}, 10)
         backend._models_cache = [{"id": "cached"}]
