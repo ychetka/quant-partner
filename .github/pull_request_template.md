@@ -10,7 +10,7 @@
 
 ## Test plan
 
-- [ ] `pytest tests/ -x -q` green
+- [ ] `python3 -m pytest tests -v` green
 - [ ] `ruff check .` + `ruff format --check .` clean
 - [ ] pyright `--outputjson` at baseline (`PYRIGHT_ERROR_BASELINE`, currently 0)
 - [ ] `.devin/scripts/verify_constraints.sh` ALL PASS

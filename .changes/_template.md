@@ -16,5 +16,6 @@ dev_summary: what changed technically, in one sentence.
 # chore this file serves as the micro-ADR - make why carry it.
 why: why this change exists and why it was done this way.
 # refs: task IDs, issue/PR, directive/decision links.
-refs: issue #N
+# Quote the value - "#" starts a YAML comment.
+refs: "issue #N"
 ---

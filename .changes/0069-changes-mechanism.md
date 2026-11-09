@@ -12,5 +12,5 @@ dev_summary: Adopts the fleet changes-mechanism convention - `.changes/`
 why: Hand-assembled release notes drifted from what each PR actually
   shipped; a machine-readable entry per PR makes release notes
   generated, reviewable and identical across orchestrated repos.
-refs: issue #69, ADR-0001
+refs: "issue #69, ADR-0001"
 ---

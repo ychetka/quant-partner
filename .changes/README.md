@@ -10,8 +10,8 @@ the previous field's value):
 
 - `type`: fix | feat | refactor | chore | docs
 - `scope`: the module/subsystem the change touches - one of
-  `server`, `backends`, `review`, `partners`, `tools`, `docs`, `ci`
-  (extend the list here when a new module lands)
+  `server`, `backends`, `review`, `partners`, `tools`, `tests`,
+  `docs`, `ci` (extend the list here when a new module lands)
 - `user_visible`: true | false - does an operator/integrator notice?
 - `breaking`: true | false - does anything consuming the MCP tool
   surface or CLI need to change?

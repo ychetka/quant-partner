@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:?--version needs a version}"; shift 2 ;;
     --apply)   APPLY=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done

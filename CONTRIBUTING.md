@@ -34,10 +34,20 @@ directory is emptied at every release, so no tag arithmetic exists.
 - `tools/release_notes.sh --version X.Y.Z --apply` is the release-prep
   step: it inserts the generated `## [X.Y.Z] - <date>` section into
   `CHANGELOG.md` under the title and deletes the consumed entry files.
-  Run it on the release branch (or the last PR before tagging) and
-  commit the result - `.devin/scripts/repo_release.sh` then tags the
-  already-prepared head and passes the generated notes to
-  `gh release create`.
+  Capture the notes BEFORE `--apply` (entries are consumed afterwards)
+  and hand them to the release script so the GitHub release body is
+  identical to the changelog section:
+
+  ```bash
+  NOTES="$(tools/release_notes.sh --version X.Y.Z)"
+  tools/release_notes.sh --version X.Y.Z --apply
+  # commit CHANGELOG.md + the emptied .changes/ on the release branch
+  .devin/scripts/repo_release.sh patch --notes "$NOTES"
+  ```
+
+  Without `--notes`, `repo_release.sh` falls back to
+  `gh release create --generate-notes`, which produces auto-notes that
+  diverge from `CHANGELOG.md`.
 
 ## Tests
 
