@@ -20,7 +20,8 @@ TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
 
 class CopilotDirectBackend:
     def __init__(self, auth: dict[str, Any], options: dict[str, Any], timeout: int) -> None:
-        copilot = options.get("copilot") if isinstance(options.get("copilot"), dict) else {}
+        copilot_raw = options.get("copilot")
+        copilot = copilot_raw if isinstance(copilot_raw, dict) else {}
         self.oauth_token = str(auth.get("github_oauth_token", ""))
         self.timeout = timeout
         self.integration_id = str(copilot.get("integration_id", "vscode-chat"))
@@ -64,7 +65,8 @@ class CopilotDirectBackend:
             expires = float(expires_at)
         except (TypeError, ValueError):
             expires = time.time() + 1500
-        endpoints = out.get("endpoints") if isinstance(out.get("endpoints"), dict) else {}
+        endpoints_raw = out.get("endpoints")
+        endpoints = endpoints_raw if isinstance(endpoints_raw, dict) else {}
         api_base = str(
             endpoints.get("api") or out.get("api_endpoint") or "https://api.githubcopilot.com"
         ).rstrip("/")
@@ -124,7 +126,8 @@ class CopilotDirectBackend:
 
     @staticmethod
     def _model_available(item: dict[str, Any]) -> bool:
-        policy = item.get("policy") if isinstance(item.get("policy"), dict) else {}
+        policy_raw = item.get("policy")
+        policy = policy_raw if isinstance(policy_raw, dict) else {}
         return str(policy.get("state", "enabled")).lower() != "disabled"
 
     def list_models(self, refresh: bool = False) -> list[str]:

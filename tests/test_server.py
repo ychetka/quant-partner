@@ -623,6 +623,7 @@ class RequestLogTest(unittest.TestCase):
         server._backend = ExBackend()
         _, error, records, _ = self._call_logged(server, "ask_partner", {})
         self.assertIsInstance(error, PartnerError)
+        assert isinstance(error, PartnerError)
         self.assertEqual(error.code, "invalid_request")
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["outcome"], "invalid_request")
@@ -695,6 +696,7 @@ class RequestLogTest(unittest.TestCase):
         server = PartnerMCPServer("code-reviewer")
         result, error, records, _ = self._call_logged(server, "review_code", {})
         self.assertIsNone(error)
+        assert result is not None
         self.assertEqual(json.loads(result)["status"], "error")
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["outcome"], "error")
@@ -709,6 +711,7 @@ class RequestLogTest(unittest.TestCase):
         }
         result, error, records, _ = self._call_logged(server, "review_code", args)
         self.assertIsNone(error)
+        assert result is not None
         self.assertEqual(json.loads(result)["status"], "rejected")
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["outcome"], "rejected")

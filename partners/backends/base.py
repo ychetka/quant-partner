@@ -44,6 +44,7 @@ class PartnerBackend(Protocol):
         generation: dict[str, Any],
     ) -> str:
         """Return assistant text for one stateless completion."""
+        raise NotImplementedError
 
     def complete_ex(
         self,

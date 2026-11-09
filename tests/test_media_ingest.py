@@ -891,7 +891,7 @@ def _fake_whisper_payload():
     }
 
 
-def _fake_run_factory(*, captions=None, media=b"fake wav", exit_code=0, stderr=""):
+def _fake_run_factory(*, captions=None, media: bytes | None = b"fake wav", exit_code=0, stderr=""):
     """Build a subprocess.run stand-in covering yt-dlp and whisper-cli.
 
     ``argv`` inspection keeps the fake honest: a whisper call carries

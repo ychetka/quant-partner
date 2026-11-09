@@ -32,10 +32,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Pyright error ratchet: the job fails when the reported error count
-      # EXCEEDS this baseline; counts at or below it pass. Lower the baseline
-      # as errors get fixed so fixed errors cannot regress; raising it
-      # requires an explicit note in the PR.
-      PYRIGHT_ERROR_BASELINE: "29"
+      # EXCEEDS this baseline; counts at or below it pass. The baseline is
+      # zero, so any pyright error fails the job; raising it requires an
+      # explicit note in the PR.
+      PYRIGHT_ERROR_BASELINE: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
