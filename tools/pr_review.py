@@ -11,9 +11,10 @@ instance (Gemini backend, ``review`` toolset) and writes a
 
 The published review is advisory only: ``event`` is always ``COMMENT``
 and the body opens with a machine-readable ``AUTO_REVIEW_VERDICT:``
-line (``APPROVE``, ``REQUEST_CHANGES`` or ``ERROR``). Findings that
-anchor to RIGHT-side diff lines become inline comments; everything
-else is folded into the body so no finding is lost to a position error.
+line (``APPROVE``, ``REQUEST_CHANGES``, ``ERROR`` or ``DRY_RUN``).
+Findings that anchor to RIGHT-side diff lines become inline comments;
+everything else is folded into the body so no finding is lost to a
+position error.
 
 Failure policy: the tool never prints diff or secret material to
 stderr. Partner or parsing failures still produce a valid review.json
@@ -169,7 +170,7 @@ def _dry_run_payload(commit_id: str) -> dict[str, Any]:
         "Dry run: the partner call was skipped and this stub verdict "
         "is not a real review. Run without `--dry-run` for a reviewed result."
     ]
-    return _payload(commit_id, "APPROVE", sections)
+    return _payload(commit_id, "DRY_RUN", sections)
 
 
 def _empty_diff_payload(commit_id: str) -> dict[str, Any]:

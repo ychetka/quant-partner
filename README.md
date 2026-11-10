@@ -186,7 +186,7 @@ The `auto_review` workflow (`.github/workflows/auto_review.yml`) posts an automa
 How to read the posted review:
 
 - The review `event` is always `COMMENT`: advisory only, it never approves, requests changes, or blocks a merge.
-- The body opens with a machine-readable `AUTO_REVIEW_VERDICT:` line. `APPROVE` means no `blocker`/`major` findings, `REQUEST_CHANGES` means at least one, `ERROR` means the review did not complete (the payload still posts and explains why).
+- The body opens with a machine-readable `AUTO_REVIEW_VERDICT:` line. `APPROVE` means no `blocker`/`major` findings, `REQUEST_CHANGES` means at least one, `ERROR` means the review did not complete (the payload still posts and explains why), and `DRY_RUN` marks the `--dry-run` stub skeleton where the partner call was skipped entirely.
 - Findings anchored to changed lines arrive as inline comments prefixed `[CRITICAL]`, `[WARNING]` or `[MINOR]`; anything that cannot anchor to the diff is folded into the body instead.
 
 Setup and disabling:

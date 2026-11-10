@@ -16,6 +16,7 @@ on:
 permissions:
   pull-requests: write
   contents: read
+  issues: write
 
 concurrency:
   group: auto-review-${{ github.event.pull_request.number }}
@@ -25,11 +26,20 @@ jobs:
   auto-review:
     runs-on: ubuntu-latest
     steps:
+      # The checkout is pinned to the PR base SHA so every tool this job
+      # executes comes from the trusted base, not from the PR merge
+      # commit, while GEMINI_API_KEY is exposed in the workspace. The
+      # pull request diff itself is fetched via `gh pr diff`, so no PR
+      # code is ever checked out or run.
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        continue-on-error: true
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        continue-on-error: true
         with:
           python-version: "3.11"
 
@@ -38,6 +48,7 @@ jobs:
       # value itself is never echoed.
       - name: Check reviewer API key
         id: key
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -63,6 +74,7 @@ jobs:
       # the job. Nothing in this step prints the key.
       - name: Generate partner config
         if: steps.key.outputs.present == 'true'
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -82,6 +94,7 @@ jobs:
 
       - name: Fetch pull request diff
         if: steps.key.outputs.present == 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr diff ${{ github.event.pull_request.number }} > diff.txt

@@ -138,7 +138,8 @@ class PrReviewToolTest(unittest.TestCase):
         payload = self._payload()
         self.assertEqual(payload["commit_id"], HEAD)
         self.assertEqual(payload["event"], "COMMENT")
-        self.assertTrue(payload["body"].startswith("AUTO_REVIEW_VERDICT:"))
+        self.assertTrue(payload["body"].startswith("AUTO_REVIEW_VERDICT: DRY_RUN"))
+        self.assertNotIn("APPROVE", payload["body"])
         self.assertIn("dry run", payload["body"].lower())
         self.assertEqual(payload["comments"], [])
 
