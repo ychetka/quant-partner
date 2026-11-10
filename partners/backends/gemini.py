@@ -82,6 +82,29 @@ class GeminiBackend:
             return None
         return version.removeprefix("models/") or None
 
+    @staticmethod
+    def _response_usage(out: dict[str, Any]) -> dict[str, int] | None:
+        """Token counts from ``usageMetadata``; ``None`` when nothing usable.
+
+        Only integer ``promptTokenCount``/``candidatesTokenCount``/
+        ``totalTokenCount`` values are kept, normalized to
+        ``prompt_tokens``/``candidates_tokens``/``total_tokens``;
+        missing or non-integer counters are omitted.
+        """
+        raw = out.get("usageMetadata")
+        if not isinstance(raw, dict):
+            return None
+        usage: dict[str, int] = {}
+        for provider_key, key in (
+            ("promptTokenCount", "prompt_tokens"),
+            ("candidatesTokenCount", "candidates_tokens"),
+            ("totalTokenCount", "total_tokens"),
+        ):
+            value = raw.get(provider_key)
+            if type(value) is int:
+                usage[key] = value
+        return usage or None
+
     def complete(
         self,
         messages: list[dict[str, str]],
@@ -139,4 +162,8 @@ class GeminiBackend:
                 else "no candidates"
             )
             raise PartnerError("backend_error", f"Gemini returned an empty response ({reason})")
-        return CompletionResult(text=text, model_used=self._response_model(out))
+        return CompletionResult(
+            text=text,
+            model_used=self._response_model(out),
+            usage=self._response_usage(out),
+        )

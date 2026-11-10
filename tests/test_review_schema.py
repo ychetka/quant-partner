@@ -370,6 +370,44 @@ class ValidateTest(unittest.TestCase):
         artifact["findings"][0]["suggested_fix"] = 42
         self.assertIn("type", _codes(validate(artifact)))
 
+    def test_usage_optional_object_validates(self):
+        artifact = _artifact(
+            usage={"prompt_tokens": 12, "candidates_tokens": 4, "total_tokens": 16}
+        )
+        self.assertEqual(validate(artifact), [])
+
+    def test_usage_partial_counters_validates(self):
+        self.assertEqual(validate(_artifact(usage={"total_tokens": 16})), [])
+        self.assertEqual(validate(_artifact(usage={})), [])
+
+    def test_usage_absent_still_validates(self):
+        self.assertEqual(validate(_artifact()), [])
+
+    def test_usage_wrong_types(self):
+        for usage in (7, "tokens", [1], None):
+            artifact = _artifact(usage=usage)
+            issues = validate(artifact)
+            self.assertTrue(
+                any(issue.path == "$.usage" and issue.code == "type" for issue in issues),
+                f"{usage!r} not flagged",
+            )
+
+    def test_usage_unknown_key_and_bad_counters(self):
+        artifact = _artifact(
+            usage={
+                "prompt_tokens": -1,
+                "candidates_tokens": "x",
+                "total_tokens": True,
+                "thoughts_tokens": 3,
+            }
+        )
+        issues = validate(artifact)
+        by_path = {issue.path: issue.code for issue in issues}
+        self.assertEqual(by_path["$.usage.prompt_tokens"], "range")
+        self.assertEqual(by_path["$.usage.candidates_tokens"], "type")
+        self.assertEqual(by_path["$.usage.total_tokens"], "type")
+        self.assertEqual(by_path["$.usage.thoughts_tokens"], "unknown_key")
+
     def test_issue_carries_no_offending_value(self):
         artifact = _artifact(summary="s3cr3t-value-that-is-too-long" * 100)
         issues = validate(artifact)

@@ -284,6 +284,107 @@ class PrReviewToolTest(unittest.TestCase):
         payload = self._payload()
         self.assertTrue(payload["body"].startswith("AUTO_REVIEW_VERDICT:"))
 
+    # Usage accounting ------------------------------------------------------------
+
+    def _usage_lines(self):
+        return [
+            line
+            for line in self.stderr.getvalue().splitlines()
+            if line.startswith("auto_review_usage ")
+        ]
+
+    def test_artifact_usage_mirrored_and_logged(self):
+        artifact = _artifact(
+            usage={"prompt_tokens": 12000, "candidates_tokens": 1500, "total_tokens": 13500}
+        )
+        with patch.object(pr, "call_review", return_value=json.dumps(artifact)):
+            code = pr.main(self._argv())
+        self.assertEqual(code, 0)
+        payload = self._payload()
+        self.assertEqual(
+            payload["usage"],
+            {
+                "prompt_tokens": 12000,
+                "candidates_tokens": 1500,
+                "total_tokens": 13500,
+                "model": "gemini-3.5-flash",
+            },
+        )
+        self.assertIn("Usage: in 12000 / out 1500 / total 13500 tokens", payload["body"])
+        lines = self._usage_lines()
+        self.assertEqual(len(lines), 1, self.stderr.getvalue())
+        self.assertIn("prompt_tokens=12000", lines[0])
+        self.assertIn("candidates_tokens=1500", lines[0])
+        self.assertIn("total_tokens=13500", lines[0])
+        # gemini-3.5-flash is in the price table, so a cost is estimated.
+        self.assertIn("est_cost_usd=0.00", lines[0])
+        self.assertNotIn("unknown", lines[0])
+
+    def test_missing_usage_logs_unknown_cost(self):
+        artifact = _artifact()
+        with patch.object(pr, "call_review", return_value=json.dumps(artifact)):
+            code = pr.main(self._argv())
+        self.assertEqual(code, 0)
+        payload = self._payload()
+        self.assertNotIn("usage", payload)
+        self.assertNotIn("Usage: in", payload["body"])
+        lines = self._usage_lines()
+        self.assertEqual(len(lines), 1, self.stderr.getvalue())
+        self.assertIn("prompt_tokens=0", lines[0])
+        self.assertIn("est_cost_usd=unknown", lines[0])
+
+    def test_unpriced_model_logs_unknown_cost(self):
+        artifact = _artifact(
+            usage={"prompt_tokens": 100, "candidates_tokens": 10, "total_tokens": 110}
+        )
+        artifact["provenance"]["model_used"] = "some-other-model"
+        artifact["provenance"]["model_requested"] = "some-other-model"
+        with patch.object(pr, "call_review", return_value=json.dumps(artifact)):
+            code = pr.main(self._argv())
+        self.assertEqual(code, 0)
+        lines = self._usage_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("prompt_tokens=100", lines[0])
+        self.assertIn("est_cost_usd=unknown", lines[0])
+
+    def test_usage_summary_flag_emits_markdown(self):
+        review = {
+            "usage": {
+                "prompt_tokens": 12000,
+                "candidates_tokens": 1500,
+                "total_tokens": 13500,
+                "model": "gemini-3.5-flash",
+            }
+        }
+        path = Path(self.tmp.name) / "review.json"
+        path.write_text(json.dumps(review), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(sys, "stdout", stdout):
+            code = pr.main(["--usage-summary", str(path)])
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("| Input tokens | 12000 |", text)
+        self.assertIn("| Output tokens | 1500 |", text)
+        self.assertIn("| Total tokens | 13500 |", text)
+        self.assertIn("gemini-3.5-flash", text)
+        self.assertIn("Est. cost | $0.007", text)
+
+    def test_usage_summary_without_usage_soft_fails(self):
+        path = Path(self.tmp.name) / "review.json"
+        path.write_text(json.dumps({"event": "COMMENT"}), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(sys, "stdout", stdout):
+            code = pr.main(["--usage-summary", str(path)])
+        self.assertEqual(code, 0)
+        self.assertIn("not reported", stdout.getvalue())
+
+    def test_usage_summary_missing_file_soft_fails(self):
+        stdout = io.StringIO()
+        with patch.object(sys, "stdout", stdout):
+            code = pr.main(["--usage-summary", str(Path(self.tmp.name) / "missing.json")])
+        self.assertEqual(code, 0)
+        self.assertIn("not reported", stdout.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

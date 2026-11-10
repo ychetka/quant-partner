@@ -143,3 +143,44 @@ jobs:
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
             --input review_body_only.json > /dev/null \
             || echo "auto-review publish failed; skipping"
+
+      # Usage accounting is soft-failed like everything else: the
+      # summary table is rendered from review.json's usage block by the
+      # same tool (shared price table), and usage.json records the same
+      # usage plus the PR coordinates as a workflow artifact.
+      # Cumulative cost tracking means downloading and summing these
+      # per-run artifacts; there is no state backend yet.
+      - name: Usage summary
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ ! -s review.json ]; then
+            echo "auto-review produced no review.json; nothing to summarize" \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 tools/pr_review.py --usage-summary review.json >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PYEOF'
+          import json
+
+          with open("review.json", encoding="utf-8") as handle:
+              review = json.load(handle)
+          usage = review.get("usage")
+          record = {
+              "run_id": "${{ github.run_id }}",
+              "pr_number": ${{ github.event.pull_request.number }},
+              "head_sha": "${{ github.event.pull_request.head.sha }}",
+              "usage": usage if isinstance(usage, dict) else {},
+          }
+          with open("usage.json", "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+          PYEOF
+
+      - name: Upload usage record
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: auto-review-usage-${{ github.run_id }}
+          path: usage.json
+          if-no-files-found: ignore

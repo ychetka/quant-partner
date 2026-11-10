@@ -231,6 +231,23 @@ class _Call:
     repair_attempted: bool = False
     repaired: bool = False
     warnings: list[str] = field(default_factory=list)
+    # Provider-reported token counters, accumulated per completed
+    # provider call; ``usage_seen`` records whether any counter was ever
+    # reported, which gates whether the artifact gets a ``usage`` key.
+    usage_prompt_tokens: int = 0
+    usage_candidates_tokens: int = 0
+    usage_total_tokens: int = 0
+    usage_seen: bool = False
+
+    def usage_snapshot(self) -> dict[str, int] | None:
+        """Accumulated token counters, or ``None`` when none were reported."""
+        if not self.usage_seen:
+            return None
+        return {
+            "prompt_tokens": self.usage_prompt_tokens,
+            "candidates_tokens": self.usage_candidates_tokens,
+            "total_tokens": self.usage_total_tokens,
+        }
 
 
 class ReviewService:
@@ -601,6 +618,20 @@ class ReviewService:
             raise
         except Exception as e:
             raise PartnerError("internal_error", "review backend call failed") from e
+        # Token counters are provider-reported ints only - never diff or
+        # prompt text - and they accumulate here, so a review that needed
+        # the bounded repair retry reports the SUM of both calls.
+        usage = getattr(result, "usage", None)
+        if isinstance(usage, dict):
+            for key, attr in (
+                ("prompt_tokens", "usage_prompt_tokens"),
+                ("candidates_tokens", "usage_candidates_tokens"),
+                ("total_tokens", "usage_total_tokens"),
+            ):
+                value = usage.get(key)
+                if type(value) is int and value >= 0:
+                    setattr(call, attr, getattr(call, attr) + value)
+                    call.usage_seen = True
         model_used = getattr(result, "model_used", None)
         served = model_used if isinstance(model_used, str) else ""
         call.model_used = served[: schema.MAX_NAME_CHARS]
@@ -865,7 +896,12 @@ class ReviewService:
         if call.warnings:
             output["warnings"] = (output.get("warnings") or []) + call.warnings
             output["warnings"] = output["warnings"][: schema.MAX_WARNINGS]
-            schema.require_valid(output)
+        # Attach accumulated provider usage only when at least one
+        # counter was seen; the final require_valid covers the key.
+        usage = call.usage_snapshot()
+        if usage is not None:
+            output["usage"] = usage
+        schema.require_valid(output)
         try:
             cache.put(call.idempotency_key, output)
         except Exception:

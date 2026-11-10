@@ -189,6 +189,8 @@ How to read the posted review:
 - The body opens with a machine-readable `AUTO_REVIEW_VERDICT:` line. `APPROVE` means no `blocker`/`major` findings, `REQUEST_CHANGES` means at least one, `ERROR` means the review did not complete (the payload still posts and explains why), and `DRY_RUN` marks the `--dry-run` stub skeleton where the partner call was skipped entirely.
 - Findings anchored to changed lines arrive as inline comments prefixed `[CRITICAL]`, `[WARNING]` or `[MINOR]`; anything that cannot anchor to the diff is folded into the body instead.
 
+Cost tracking: when the provider reports token usage, the posted review body ends with a compact `Usage: in <p> / out <c> / total <t> tokens` line and the runner emits one `auto_review_usage prompt_tokens=... est_cost_usd=...` stderr record. The workflow's "Usage summary" step adds a token/cost table to the job summary, and each run uploads a `auto-review-usage-<run_id>` workflow artifact containing `usage.json` (token counters, model, head SHA, PR number); cumulative accounting means downloading and summing those artifacts - there is no state backend yet. Estimated cost comes from a hardcoded approximate price table in `tools/pr_review.py` (gemini-3.5-flash ≈ $0.30/M input tokens, $2.50/M output tokens as of 2026-11-10); the AI Studio quota page stays the source of truth. At those prices a typical diff of ~12K input / ~1.5K output tokens costs roughly $0.0073 per review - an estimate, not a billing figure.
+
 Setup and disabling:
 
 - Requires the `GEMINI_API_KEY` repository secret configured under **Settings -> Secrets and variables -> Actions**. When the secret is absent (for example on forks) the job skips the review and posts a short note instead of failing.
