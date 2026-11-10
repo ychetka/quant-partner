@@ -63,6 +63,26 @@ _SEVERITY_LABELS = {
 _MAX_ERROR_CHARS = 300
 _MAX_INLINE_BODY_CHARS = 4000
 
+_USAGE_KEYS = (
+    "prompt_tokens",
+    "candidates_tokens",
+    "total_tokens",
+    "thoughts_tokens",
+    "cached_tokens",
+)
+
+# Optional thinking-model counters, surfaced separately from the base
+# three so artifacts without them keep a clean in/out/total shape.
+_USAGE_OPTIONAL_KEYS = ("thoughts_tokens", "cached_tokens")
+
+# Approximate USD-per-million-token prices used for the est_cost_usd
+# estimate only: these are rough figures as of 2026-11-10 and must be
+# verified against current Google pricing before being relied on. The
+# AI Studio quota page stays the source of truth.
+_PRICE_PER_MTOK_USD = {
+    "gemini-3.5-flash": {"input": 0.30, "output": 2.50},
+}
+
 
 def load_review_options() -> dict[str, Any]:
     """Return ``options.review`` of the auto-reviewer partner.
@@ -267,6 +287,113 @@ def _artifact_payload(
     return payload
 
 
+def _usage_counts(usage: Any) -> dict[str, int] | None:
+    """Int token counters from an artifact ``usage`` object; ``None`` when absent."""
+    if not isinstance(usage, dict):
+        return None
+    counts = {}
+    for key in _USAGE_KEYS:
+        value = usage.get(key)
+        if type(value) is int and value >= 0:
+            counts[key] = value
+    return counts or None
+
+
+def _artifact_model(artifact: dict[str, Any]) -> str:
+    """Provider-served model id for pricing, falling back to the requested one."""
+    provenance = artifact.get("provenance")
+    if not isinstance(provenance, dict):
+        return ""
+    for key in ("model_used", "model_requested"):
+        value = provenance.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _estimate_cost_usd(model: Any, counts: dict[str, int]) -> float | None:
+    """Rough USD estimate for one run; ``None`` when the model is not priced."""
+    if not isinstance(model, str) or not model:
+        return None
+    price = _PRICE_PER_MTOK_USD.get(model)
+    if price is None:
+        return None
+    # Thinking and cached tokens are excluded from the estimate: only
+    # prompt+candidates pricing is applied.
+    return (
+        counts.get("prompt_tokens", 0) * price["input"]
+        + counts.get("candidates_tokens", 0) * price["output"]
+    ) / 1_000_000
+
+
+def _usage_summary_markdown(review: dict[str, Any]) -> str:
+    """GitHub step-summary markdown table for a review.json usage block."""
+    usage = review.get("usage")
+    counts = _usage_counts(usage)
+    lines = [
+        "### Auto-review usage",
+        "",
+        "| Metric | Value |",
+        "| --- | --- |",
+    ]
+    if counts is None:
+        lines.append("| Usage | not reported by the provider |")
+        return "\n".join(lines) + "\n"
+    model = usage.get("model") if isinstance(usage, dict) else None
+    if isinstance(model, str) and model:
+        lines.append(f"| Model | `{model}` |")
+    cost = _estimate_cost_usd(model, counts)
+    lines.append(f"| Input tokens | {counts.get('prompt_tokens', 0)} |")
+    lines.append(f"| Output tokens | {counts.get('candidates_tokens', 0)} |")
+    lines.append(f"| Total tokens | {counts.get('total_tokens', 0)} |")
+    # Optional thinking-model counters appear only when the provider
+    # reported them; they are not part of the cost estimate below.
+    if "thoughts_tokens" in counts:
+        lines.append(f"| Thoughts tokens | {counts['thoughts_tokens']} |")
+    if "cached_tokens" in counts:
+        lines.append(f"| Cached tokens | {counts['cached_tokens']} |")
+    if cost is None:
+        lines.append("| Est. cost | unknown (model not in price table) |")
+    else:
+        lines.append(f"| Est. cost | ${cost:.4f} USD |")
+    return "\n".join(lines) + "\n"
+
+
+def _usage_summary_main(path: str) -> int:
+    """Print the step-summary markdown for a review.json file; always exits 0."""
+    try:
+        review = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        review = {}
+    sys.stdout.write(_usage_summary_markdown(review if isinstance(review, dict) else {}))
+    return 0
+
+
+def _body_only_main(path: str) -> int:
+    """Write the body-only sibling of a review.json for the 422 retry.
+
+    The GitHub reviews API only accepts ``commit_id``/``body``/``event``/
+    ``comments`` and a few other documented keys, so the retry strips
+    ``comments`` (the likely 422 cause) and ``usage`` (tool-side
+    metadata, not an API field); any other unknown key would fail
+    identically on retry either way.
+    """
+    source = Path(path)
+    try:
+        review = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        review = {}
+    if not isinstance(review, dict):
+        review = {}
+    review.pop("comments", None)
+    review.pop("usage", None)
+    target = source.with_name(f"{source.stem}_body_only.json")
+    if not _write_payload(str(target), review):
+        _stderr_line(f"cannot write {target}")
+        return 2
+    return 0
+
+
 def _read_diff(args: argparse.Namespace) -> str | None:
     """Read the unified diff from --diff-file or stdin; None on failure."""
     try:
@@ -348,7 +475,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Exit non-zero on partner failure (default: soft-fail with exit 0)",
     )
+    parser.add_argument(
+        "--usage-summary",
+        default="",
+        metavar="REVIEW_JSON",
+        help=(
+            "Read a review.json and print a GitHub step-summary markdown "
+            "usage/cost table to stdout, then exit 0"
+        ),
+    )
+    parser.add_argument(
+        "--body-only",
+        default="",
+        metavar="REVIEW_JSON",
+        help=(
+            "Read a review.json, strip keys the GitHub reviews API does "
+            "not accept (comments, usage) and write <stem>_body_only.json "
+            "next to it; used by the workflow's body-only 422 retry"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.usage_summary:
+        return _usage_summary_main(args.usage_summary)
+    if args.body_only:
+        return _body_only_main(args.body_only)
 
     commit_id = args.commit_id
     if not commit_id:
@@ -415,6 +566,41 @@ def main(argv: list[str] | None = None) -> int:
 
         if artifact is not None and artifact.get("status") == "ok":
             payload = _artifact_payload(commit_id, artifact, parse_diff(sent_diff), notes)
+            # Provider-reported token counters only - never diff or
+            # prompt text. The review.json usage block mirrors the
+            # artifact counters and adds the resolved model so the
+            # workflow summary can price the run; ``usage`` is not an
+            # API field, so the workflow's body-only 422 retry strips it
+            # alongside ``comments`` (--body-only).
+            counts = _usage_counts(artifact.get("usage"))
+            model = _artifact_model(artifact)
+            if counts is not None:
+                payload["usage"] = dict(counts)
+                if model:
+                    payload["usage"]["model"] = model
+                payload["body"] += (
+                    f"\n\nUsage: in {counts.get('prompt_tokens', 0)} / "
+                    f"out {counts.get('candidates_tokens', 0)} / "
+                    f"total {counts.get('total_tokens', 0)} tokens"
+                )
+            report = counts or {}
+            # est_cost_usd stays "unknown" whenever the provider reported
+            # no usage or the served model is absent from the price table.
+            cost = _estimate_cost_usd(model, report) if counts is not None else None
+            est = f"{cost:.4f}" if cost is not None else "unknown"
+            # Optional thinking-model counters are appended as extra
+            # key=value fields only when the provider reported them.
+            extras = "".join(
+                f" {key}={report[key]}" for key in _USAGE_OPTIONAL_KEYS if key in report
+            )
+            print(
+                "auto_review_usage "
+                f"prompt_tokens={report.get('prompt_tokens', 0)} "
+                f"candidates_tokens={report.get('candidates_tokens', 0)} "
+                f"total_tokens={report.get('total_tokens', 0)} "
+                f"est_cost_usd={est}{extras}",
+                file=sys.stderr,
+            )
         else:
             if artifact is not None:
                 failure_reason = _artifact_error_reason(artifact)

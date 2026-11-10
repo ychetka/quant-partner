@@ -657,6 +657,110 @@ class ReviewToolsetTest(unittest.TestCase):
         self.assertEqual(artifact["provenance"]["model_used"], "gpt-5.3-codex")
         self.assertEqual(len(backend.complete_calls), 2)
 
+    # -- provider usage accounting -----------------------------------------------
+
+    def test_backend_usage_lands_in_artifact(self):
+        backend = ScriptedBackend(
+            [
+                CompletionResult(
+                    text=model_payload(),
+                    model_used="claude-sonnet-5.5",
+                    usage={
+                        "prompt_tokens": 120,
+                        "candidates_tokens": 40,
+                        "total_tokens": 160,
+                        "thoughts_tokens": 30,
+                        "cached_tokens": 12,
+                    },
+                )
+            ],
+            model_used="claude-sonnet-5.5",
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        self.assertFalse(validate(artifact), "artifact with usage must satisfy the schema")
+        self.assertEqual(
+            artifact["usage"],
+            {
+                "prompt_tokens": 120,
+                "candidates_tokens": 40,
+                "total_tokens": 160,
+                "thoughts_tokens": 30,
+                "cached_tokens": 12,
+            },
+        )
+
+    def test_missing_backend_usage_omits_artifact_key(self):
+        backend = FakeBackend(text=model_payload(), model_used="claude-sonnet-5.5")
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        self.assertNotIn("usage", artifact)
+        self.assertFalse(validate(artifact))
+
+    def test_partial_backend_usage_still_attaches(self):
+        backend = ScriptedBackend(
+            [
+                CompletionResult(
+                    text=model_payload(),
+                    model_used="claude-sonnet-5.5",
+                    usage={"total_tokens": 55},
+                )
+            ],
+            model_used="claude-sonnet-5.5",
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        self.assertEqual(
+            artifact["usage"],
+            {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 55},
+        )
+        # Unreported thinking/cached counters stay absent, not zeroed.
+        self.assertNotIn("thoughts_tokens", artifact["usage"])
+        self.assertNotIn("cached_tokens", artifact["usage"])
+        self.assertFalse(validate(artifact))
+
+    def test_usage_sums_across_repair_retry(self):
+        backend = ScriptedBackend(
+            [
+                CompletionResult(
+                    text="not json",
+                    model_used="claude-sonnet-5.5",
+                    usage={
+                        "prompt_tokens": 100,
+                        "candidates_tokens": 10,
+                        "total_tokens": 110,
+                        "thoughts_tokens": 20,
+                    },
+                ),
+                CompletionResult(
+                    text=model_payload(),
+                    model_used="claude-sonnet-5.5",
+                    usage={
+                        "prompt_tokens": 150,
+                        "candidates_tokens": 25,
+                        "total_tokens": 175,
+                        "thoughts_tokens": 30,
+                        "cached_tokens": 8,
+                    },
+                ),
+            ],
+            model_used="claude-sonnet-5.5",
+        )
+        artifact = self._artifact(self._server(backend), valid_args())
+        self.assertEqual(artifact["status"], "ok", artifact)
+        # Both provider calls charged tokens; the artifact reports the sum.
+        self.assertEqual(
+            artifact["usage"],
+            {
+                "prompt_tokens": 250,
+                "candidates_tokens": 35,
+                "total_tokens": 285,
+                "thoughts_tokens": 50,
+                "cached_tokens": 8,
+            },
+        )
+        self.assertFalse(validate(artifact))
+
     # -- happy path and cache ----------------------------------------------------
 
     def test_valid_artifact_ok(self):

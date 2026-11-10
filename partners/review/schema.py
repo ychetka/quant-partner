@@ -74,6 +74,7 @@ _TOP_KEYS = frozenset(
         "head_sha",
         "base_sha",
         "provenance",
+        "usage",
         "verdict",
         "summary",
         "findings",
@@ -115,6 +116,15 @@ _FINDING_KEYS = frozenset(
 )
 _DROPPED_KEYS = frozenset({"id", "reason"})
 _ERROR_KEYS = frozenset({"code", "message"})
+_USAGE_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "candidates_tokens",
+        "total_tokens",
+        "thoughts_tokens",
+        "cached_tokens",
+    }
+)
 
 _SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 _IDEMPOTENCY_RE = re.compile(r"[0-9a-fA-F]{64}")
@@ -388,6 +398,22 @@ def _error_issues(value: Any, path: str, issues: list[Issue]) -> None:
     _check_str_field(value, "message", path, issues, max_chars=MAX_ERROR_MESSAGE_CHARS)
 
 
+def _usage_issues(value: Any, path: str, issues: list[Issue]) -> None:
+    """Validate the optional ``usage`` object: known keys holding non-negative ints."""
+    if not isinstance(value, dict):
+        _issue(issues, path, "type")
+        return
+    _unknown_keys(value, _USAGE_KEYS, path, issues)
+    for key in _USAGE_KEYS:
+        if key not in value:
+            continue
+        field = value[key]
+        if type(field) is not int:
+            _issue(issues, f"{path}.{key}", "type")
+        elif field < 0:
+            _issue(issues, f"{path}.{key}", "range")
+
+
 def _string_items(values: list[Any], path: str, issues: list[Issue], *, max_chars: int) -> None:
     for index, item in enumerate(values):
         _check_str(item, f"{path}[{index}]", issues, max_chars=max_chars)
@@ -429,6 +455,8 @@ def _common_issues(value: Any) -> list[Issue]:
         _issue(issues, "$.provenance", "required")
     else:
         _provenance_issues(value["provenance"], "$.provenance", issues)
+    if "usage" in value:
+        _usage_issues(value["usage"], "$.usage", issues)
     _check_enum_field(value, "verdict", "$", issues, VERDICTS)
     _check_str_field(value, "summary", "$", issues, max_chars=MAX_SUMMARY_CHARS, allow_empty=True)
     _check_list_field(value, "findings", "$", issues, max_items=MAX_FINDINGS)

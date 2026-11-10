@@ -24,6 +24,9 @@ class CompletionResultTest(unittest.TestCase):
         self.assertEqual(result.text, "x")
         self.assertIsNone(result.model_used)
 
+    def test_default_usage_is_none(self):
+        self.assertIsNone(CompletionResult(text="x").usage)
+
 
 class CopilotProvenanceTest(unittest.TestCase):
     def _backend(self, options=None):
@@ -112,6 +115,77 @@ class GeminiProvenanceTest(unittest.TestCase):
     def test_missing_model_version_is_none(self):
         payload = {"candidates": [{"content": {"parts": [{"text": "answer"}]}}]}
         self.assertIsNone(self._run(payload).model_used)
+
+    def test_usage_metadata_extracted(self):
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 12,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 16,
+            },
+        }
+        self.assertEqual(
+            self._run(payload).usage,
+            {"prompt_tokens": 12, "candidates_tokens": 4, "total_tokens": 16},
+        )
+
+    def test_usage_metadata_thinking_counters_extracted(self):
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 12,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 16,
+                "thoughtsTokenCount": 7,
+                "cachedContentTokenCount": 3,
+            },
+        }
+        self.assertEqual(
+            self._run(payload).usage,
+            {
+                "prompt_tokens": 12,
+                "candidates_tokens": 4,
+                "total_tokens": 16,
+                "thoughts_tokens": 7,
+                "cached_tokens": 3,
+            },
+        )
+
+    def test_usage_metadata_without_thinking_counters_omits_them(self):
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+            "usageMetadata": {"promptTokenCount": 12},
+        }
+        usage = self._run(payload).usage or {}
+        self.assertEqual(usage, {"prompt_tokens": 12})
+        self.assertNotIn("thoughts_tokens", usage)
+        self.assertNotIn("cached_tokens", usage)
+
+    def test_missing_usage_metadata_is_none(self):
+        payload = {"candidates": [{"content": {"parts": [{"text": "answer"}]}}]}
+        self.assertIsNone(self._run(payload).usage)
+
+    def test_usage_metadata_keeps_int_counters_only(self):
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 12,
+                "candidatesTokenCount": "many",
+                "totalTokenCount": None,
+                "thoughtsTokenCount": "many",
+            },
+        }
+        self.assertEqual(self._run(payload).usage, {"prompt_tokens": 12})
+
+    def test_unusable_usage_metadata_is_none(self):
+        for usage_metadata in ("tokens", {"promptTokenCount": "x"}, {}):
+            payload = {
+                "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+                "usageMetadata": usage_metadata,
+            }
+            with self.subTest(usage=usage_metadata):
+                self.assertIsNone(self._run(payload).usage)
 
     def test_complete_still_returns_str(self):
         backend = GeminiBackend({"gemini_api_key": "key"}, {"ipv4_only": False}, 10)

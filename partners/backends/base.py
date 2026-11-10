@@ -17,10 +17,17 @@ class CompletionResult:
     means the response carried no served-model identity the backend can
     attest to. It is never inferred from the request, generated text or
     configuration.
+
+    ``usage`` carries provider-reported token counts only, normalized to
+    a subset of ``{"prompt_tokens", "candidates_tokens", "total_tokens",
+    "thoughts_tokens", "cached_tokens"}``; ``None`` means the response
+    reported no usable usage data. It is never inferred from request or
+    response text.
     """
 
     text: str
     model_used: str | None = None
+    usage: dict[str, int] | None = None
 
 
 class PartnerBackend(Protocol):
