@@ -237,17 +237,27 @@ class _Call:
     usage_prompt_tokens: int = 0
     usage_candidates_tokens: int = 0
     usage_total_tokens: int = 0
+    # Thinking/cached counters are optional at the provider: they stay
+    # ``None`` until actually reported, so snapshots omit the keys
+    # entirely instead of fabricating zeros for non-thinking models.
+    usage_thoughts_tokens: int | None = None
+    usage_cached_tokens: int | None = None
     usage_seen: bool = False
 
     def usage_snapshot(self) -> dict[str, int] | None:
         """Accumulated token counters, or ``None`` when none were reported."""
         if not self.usage_seen:
             return None
-        return {
+        snapshot = {
             "prompt_tokens": self.usage_prompt_tokens,
             "candidates_tokens": self.usage_candidates_tokens,
             "total_tokens": self.usage_total_tokens,
         }
+        if self.usage_thoughts_tokens is not None:
+            snapshot["thoughts_tokens"] = self.usage_thoughts_tokens
+        if self.usage_cached_tokens is not None:
+            snapshot["cached_tokens"] = self.usage_cached_tokens
+        return snapshot
 
 
 class ReviewService:
@@ -627,10 +637,12 @@ class ReviewService:
                 ("prompt_tokens", "usage_prompt_tokens"),
                 ("candidates_tokens", "usage_candidates_tokens"),
                 ("total_tokens", "usage_total_tokens"),
+                ("thoughts_tokens", "usage_thoughts_tokens"),
+                ("cached_tokens", "usage_cached_tokens"),
             ):
                 value = usage.get(key)
                 if type(value) is int and value >= 0:
-                    setattr(call, attr, getattr(call, attr) + value)
+                    setattr(call, attr, (getattr(call, attr) or 0) + value)
                     call.usage_seen = True
         model_used = getattr(result, "model_used", None)
         served = model_used if isinstance(model_used, str) else ""

@@ -116,7 +116,15 @@ _FINDING_KEYS = frozenset(
 )
 _DROPPED_KEYS = frozenset({"id", "reason"})
 _ERROR_KEYS = frozenset({"code", "message"})
-_USAGE_KEYS = frozenset({"prompt_tokens", "candidates_tokens", "total_tokens"})
+_USAGE_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "candidates_tokens",
+        "total_tokens",
+        "thoughts_tokens",
+        "cached_tokens",
+    }
+)
 
 _SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
 _IDEMPOTENCY_RE = re.compile(r"[0-9a-fA-F]{64}")

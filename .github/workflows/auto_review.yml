@@ -111,8 +111,9 @@ jobs:
             --out review.json
 
       # Publishing is soft-failed as well: on a 422 (invalid comment
-      # position) the review is retried with inline comments stripped
-      # so the verdict body still lands on the PR.
+      # position) the review is retried with both inline comments and
+      # the non-API `usage` block stripped so the verdict body still
+      # lands on the PR.
       - name: Publish review
         if: steps.key.outputs.present == 'true' && always()
         continue-on-error: true
@@ -130,15 +131,7 @@ jobs:
             exit 0
           fi
           echo "review POST failed (likely invalid comment positions); retrying body-only"
-          python3 - <<'PYEOF'
-          import json
-
-          with open("review.json", encoding="utf-8") as handle:
-              data = json.load(handle)
-          data.pop("comments", None)
-          with open("review_body_only.json", "w", encoding="utf-8") as handle:
-              json.dump(data, handle)
-          PYEOF
+          python3 tools/pr_review.py --body-only review.json
           gh api -X POST \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
             --input review_body_only.json > /dev/null \

@@ -319,6 +319,37 @@ class PrReviewToolTest(unittest.TestCase):
         # gemini-3.5-flash is in the price table, so a cost is estimated.
         self.assertIn("est_cost_usd=0.00", lines[0])
         self.assertNotIn("unknown", lines[0])
+        # Optional thinking-model counters were not reported, so they
+        # appear nowhere - not in the payload, the body or stderr.
+        self.assertNotIn("thoughts_tokens", payload["usage"])
+        self.assertNotIn("thoughts_tokens", lines[0])
+        self.assertNotIn("cached_tokens", lines[0])
+
+    def test_thinking_counters_mirrored_logged_and_excluded_from_cost(self):
+        artifact = _artifact(
+            usage={
+                "prompt_tokens": 12000,
+                "candidates_tokens": 1500,
+                "total_tokens": 13500,
+                "thoughts_tokens": 900,
+                "cached_tokens": 300,
+            }
+        )
+        with patch.object(pr, "call_review", return_value=json.dumps(artifact)):
+            code = pr.main(self._argv())
+        self.assertEqual(code, 0)
+        payload = self._payload()
+        self.assertEqual(payload["usage"]["thoughts_tokens"], 900)
+        self.assertEqual(payload["usage"]["cached_tokens"], 300)
+        # The body line stays in/out/total.
+        self.assertIn("Usage: in 12000 / out 1500 / total 13500 tokens", payload["body"])
+        self.assertNotIn("thoughts", payload["body"])
+        lines = self._usage_lines()
+        self.assertEqual(len(lines), 1, self.stderr.getvalue())
+        self.assertIn("thoughts_tokens=900", lines[0])
+        self.assertIn("cached_tokens=300", lines[0])
+        # The estimate still prices only prompt+candidates tokens.
+        self.assertIn("est_cost_usd=0.007", lines[0])
 
     def test_missing_usage_logs_unknown_cost(self):
         artifact = _artifact()
@@ -368,6 +399,61 @@ class PrReviewToolTest(unittest.TestCase):
         self.assertIn("| Total tokens | 13500 |", text)
         self.assertIn("gemini-3.5-flash", text)
         self.assertIn("Est. cost | $0.007", text)
+        self.assertNotIn("Thoughts tokens", text)
+        self.assertNotIn("Cached tokens", text)
+
+    def test_usage_summary_lists_thinking_counters_when_present(self):
+        review = {
+            "usage": {
+                "prompt_tokens": 12000,
+                "candidates_tokens": 1500,
+                "total_tokens": 13500,
+                "thoughts_tokens": 900,
+                "cached_tokens": 300,
+                "model": "gemini-3.5-flash",
+            }
+        }
+        path = Path(self.tmp.name) / "review.json"
+        path.write_text(json.dumps(review), encoding="utf-8")
+        stdout = io.StringIO()
+        with patch.object(sys, "stdout", stdout):
+            code = pr.main(["--usage-summary", str(path)])
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("| Thoughts tokens | 900 |", text)
+        self.assertIn("| Cached tokens | 300 |", text)
+        # The cost row still prices only prompt+candidates tokens.
+        self.assertIn("Est. cost | $0.007", text)
+
+    def test_body_only_strips_comments_and_usage_for_422_retry(self):
+        review = {
+            "commit_id": HEAD,
+            "body": "AUTO_REVIEW_VERDICT: APPROVE\n\nUsage: in 1 / out 2 / total 3 tokens",
+            "event": "COMMENT",
+            "comments": [{"path": "src/app.py", "line": 2, "side": "RIGHT", "body": "[WARNING] x"}],
+            "usage": {
+                "prompt_tokens": 1,
+                "candidates_tokens": 2,
+                "total_tokens": 3,
+                "thoughts_tokens": 1,
+            },
+        }
+        path = Path(self.tmp.name) / "review.json"
+        path.write_text(json.dumps(review), encoding="utf-8")
+        code = pr.main(["--body-only", str(path)])
+        self.assertEqual(code, 0)
+        stripped = json.loads((path.parent / "review_body_only.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            stripped,
+            {"commit_id": HEAD, "body": review["body"], "event": "COMMENT"},
+        )
+
+    def test_body_only_missing_file_writes_empty_payload(self):
+        path = Path(self.tmp.name) / "missing.json"
+        code = pr.main(["--body-only", str(path)])
+        self.assertEqual(code, 0)
+        stripped = json.loads((path.parent / "missing_body_only.json").read_text(encoding="utf-8"))
+        self.assertEqual(stripped, {})
 
     def test_usage_summary_without_usage_soft_fails(self):
         path = Path(self.tmp.name) / "review.json"

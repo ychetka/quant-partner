@@ -87,9 +87,11 @@ class GeminiBackend:
         """Token counts from ``usageMetadata``; ``None`` when nothing usable.
 
         Only integer ``promptTokenCount``/``candidatesTokenCount``/
-        ``totalTokenCount`` values are kept, normalized to
-        ``prompt_tokens``/``candidates_tokens``/``total_tokens``;
-        missing or non-integer counters are omitted.
+        ``totalTokenCount``/``thoughtsTokenCount``/
+        ``cachedContentTokenCount`` values are kept, normalized to
+        ``prompt_tokens``/``candidates_tokens``/``total_tokens``/
+        ``thoughts_tokens``/``cached_tokens``; missing or non-integer
+        counters are omitted.
         """
         raw = out.get("usageMetadata")
         if not isinstance(raw, dict):
@@ -99,6 +101,8 @@ class GeminiBackend:
             ("promptTokenCount", "prompt_tokens"),
             ("candidatesTokenCount", "candidates_tokens"),
             ("totalTokenCount", "total_tokens"),
+            ("thoughtsTokenCount", "thoughts_tokens"),
+            ("cachedContentTokenCount", "cached_tokens"),
         ):
             value = raw.get(provider_key)
             if type(value) is int:

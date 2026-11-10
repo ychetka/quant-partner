@@ -19,9 +19,10 @@ class CompletionResult:
     configuration.
 
     ``usage`` carries provider-reported token counts only, normalized to
-    ``{"prompt_tokens", "candidates_tokens", "total_tokens"}``; ``None``
-    means the response reported no usable usage data. It is never
-    inferred from request or response text.
+    a subset of ``{"prompt_tokens", "candidates_tokens", "total_tokens",
+    "thoughts_tokens", "cached_tokens"}``; ``None`` means the response
+    reported no usable usage data. It is never inferred from request or
+    response text.
     """
 
     text: str

@@ -380,6 +380,20 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(validate(_artifact(usage={"total_tokens": 16})), [])
         self.assertEqual(validate(_artifact(usage={})), [])
 
+    def test_usage_optional_thinking_counters_validate(self):
+        artifact = _artifact(
+            usage={
+                "prompt_tokens": 12,
+                "candidates_tokens": 4,
+                "total_tokens": 16,
+                "thoughts_tokens": 7,
+                "cached_tokens": 3,
+            }
+        )
+        self.assertEqual(validate(artifact), [])
+        self.assertEqual(validate(_artifact(usage={"thoughts_tokens": 7})), [])
+        self.assertEqual(validate(_artifact(usage={"cached_tokens": 3})), [])
+
     def test_usage_absent_still_validates(self):
         self.assertEqual(validate(_artifact()), [])
 
@@ -398,7 +412,9 @@ class ValidateTest(unittest.TestCase):
                 "prompt_tokens": -1,
                 "candidates_tokens": "x",
                 "total_tokens": True,
-                "thoughts_tokens": 3,
+                "thoughts_tokens": "many",
+                "cached_tokens": -2,
+                "mystery_key": 3,
             }
         )
         issues = validate(artifact)
@@ -406,7 +422,9 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(by_path["$.usage.prompt_tokens"], "range")
         self.assertEqual(by_path["$.usage.candidates_tokens"], "type")
         self.assertEqual(by_path["$.usage.total_tokens"], "type")
-        self.assertEqual(by_path["$.usage.thoughts_tokens"], "unknown_key")
+        self.assertEqual(by_path["$.usage.thoughts_tokens"], "type")
+        self.assertEqual(by_path["$.usage.cached_tokens"], "range")
+        self.assertEqual(by_path["$.usage.mystery_key"], "unknown_key")
 
     def test_issue_carries_no_offending_value(self):
         artifact = _artifact(summary="s3cr3t-value-that-is-too-long" * 100)

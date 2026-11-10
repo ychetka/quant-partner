@@ -669,6 +669,8 @@ class ReviewToolsetTest(unittest.TestCase):
                         "prompt_tokens": 120,
                         "candidates_tokens": 40,
                         "total_tokens": 160,
+                        "thoughts_tokens": 30,
+                        "cached_tokens": 12,
                     },
                 )
             ],
@@ -679,7 +681,13 @@ class ReviewToolsetTest(unittest.TestCase):
         self.assertFalse(validate(artifact), "artifact with usage must satisfy the schema")
         self.assertEqual(
             artifact["usage"],
-            {"prompt_tokens": 120, "candidates_tokens": 40, "total_tokens": 160},
+            {
+                "prompt_tokens": 120,
+                "candidates_tokens": 40,
+                "total_tokens": 160,
+                "thoughts_tokens": 30,
+                "cached_tokens": 12,
+            },
         )
 
     def test_missing_backend_usage_omits_artifact_key(self):
@@ -706,6 +714,9 @@ class ReviewToolsetTest(unittest.TestCase):
             artifact["usage"],
             {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 55},
         )
+        # Unreported thinking/cached counters stay absent, not zeroed.
+        self.assertNotIn("thoughts_tokens", artifact["usage"])
+        self.assertNotIn("cached_tokens", artifact["usage"])
         self.assertFalse(validate(artifact))
 
     def test_usage_sums_across_repair_retry(self):
@@ -718,6 +729,7 @@ class ReviewToolsetTest(unittest.TestCase):
                         "prompt_tokens": 100,
                         "candidates_tokens": 10,
                         "total_tokens": 110,
+                        "thoughts_tokens": 20,
                     },
                 ),
                 CompletionResult(
@@ -727,6 +739,8 @@ class ReviewToolsetTest(unittest.TestCase):
                         "prompt_tokens": 150,
                         "candidates_tokens": 25,
                         "total_tokens": 175,
+                        "thoughts_tokens": 30,
+                        "cached_tokens": 8,
                     },
                 ),
             ],
@@ -737,7 +751,13 @@ class ReviewToolsetTest(unittest.TestCase):
         # Both provider calls charged tokens; the artifact reports the sum.
         self.assertEqual(
             artifact["usage"],
-            {"prompt_tokens": 250, "candidates_tokens": 35, "total_tokens": 285},
+            {
+                "prompt_tokens": 250,
+                "candidates_tokens": 35,
+                "total_tokens": 285,
+                "thoughts_tokens": 50,
+                "cached_tokens": 8,
+            },
         )
         self.assertFalse(validate(artifact))
 

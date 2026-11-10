@@ -130,6 +130,38 @@ class GeminiProvenanceTest(unittest.TestCase):
             {"prompt_tokens": 12, "candidates_tokens": 4, "total_tokens": 16},
         )
 
+    def test_usage_metadata_thinking_counters_extracted(self):
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 12,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 16,
+                "thoughtsTokenCount": 7,
+                "cachedContentTokenCount": 3,
+            },
+        }
+        self.assertEqual(
+            self._run(payload).usage,
+            {
+                "prompt_tokens": 12,
+                "candidates_tokens": 4,
+                "total_tokens": 16,
+                "thoughts_tokens": 7,
+                "cached_tokens": 3,
+            },
+        )
+
+    def test_usage_metadata_without_thinking_counters_omits_them(self):
+        payload = {
+            "candidates": [{"content": {"parts": [{"text": "answer"}]}}],
+            "usageMetadata": {"promptTokenCount": 12},
+        }
+        usage = self._run(payload).usage or {}
+        self.assertEqual(usage, {"prompt_tokens": 12})
+        self.assertNotIn("thoughts_tokens", usage)
+        self.assertNotIn("cached_tokens", usage)
+
     def test_missing_usage_metadata_is_none(self):
         payload = {"candidates": [{"content": {"parts": [{"text": "answer"}]}}]}
         self.assertIsNone(self._run(payload).usage)
@@ -141,6 +173,7 @@ class GeminiProvenanceTest(unittest.TestCase):
                 "promptTokenCount": 12,
                 "candidatesTokenCount": "many",
                 "totalTokenCount": None,
+                "thoughtsTokenCount": "many",
             },
         }
         self.assertEqual(self._run(payload).usage, {"prompt_tokens": 12})
