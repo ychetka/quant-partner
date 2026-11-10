@@ -344,7 +344,7 @@ class AdvisoryGroundingContractTest(unittest.TestCase):
         # partner - one per code, product and review toolset. Disabled
         # partners cannot be loaded, so they cannot be checked here.
         self.assertEqual(
-            {"gh-copilot-partner", "gemini-product", "code-reviewer"},
+            {"gh-copilot-partner", "gemini-product", "code-reviewer", "auto-reviewer"},
             non_advisory,
         )
         for partner_id in sorted(non_advisory):

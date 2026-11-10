@@ -92,6 +92,49 @@
       "model": "claude-sonnet-5.5",
       "timeout_seconds": 240
     },
+    "auto-reviewer": {
+      "enabled": true,
+      "toolset": "review",
+      "backend": "gemini",
+      "harness": "harness/auto-reviewer.txt",
+      "default_skill": "reviewer",
+      "skills_root": "skills/auto-reviewer",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true,
+        "review": {
+          "max_diff_chars": 200000,
+          "max_context_chars": 50000,
+          "max_files": 20,
+          "max_file_chars": 100000,
+          "max_findings": 20,
+          "cache_dir": ".cache/auto-reviewer",
+          "cache_ttl_seconds": 86400,
+          "allowed_models": {
+            "gemini": {
+              "backend_model": "gemini-3.5-flash",
+              "match": "exact"
+            }
+          }
+        }
+      },
+      "model": "gemini-3.5-flash",
+      "models": {
+        "default": "gemini-3.5-flash",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-3.8-flash",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.1,
+        "max_tokens": 8192
+      },
+      "timeout_seconds": 240
+    },
     "local-openai-partner": {
       "enabled": false,
       "toolset": "code",

@@ -1,0 +1,132 @@
+# Copyright (c) 2026 Alexandr Varenic / ychetka.
+# SPDX-License-Identifier: MIT
+
+name: Auto PR Review
+
+# Advisory, non-blocking pull-request review driven by the
+# `auto-reviewer` partner (Gemini backend). Publishes a `COMMENT`
+# review as github-actions[bot] whose body opens with a
+# machine-readable `AUTO_REVIEW_VERDICT:` line. Every step that can
+# fail is soft-failed: this workflow must never block a merge.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+concurrency:
+  group: auto-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      # Secrets cannot be read in step `if:` conditions, so presence is
+      # probed once inside a step and exposed as an output. The key
+      # value itself is never echoed.
+      - name: Check reviewer API key
+        id: key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -n "$GEMINI_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify when auto-review is skipped
+        if: steps.key.outputs.present != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            -f body="auto-review skipped: GEMINI_API_KEY not configured" \
+            || echo "auto-review skipped: GEMINI_API_KEY not configured"
+
+      # partners/config.json is git-ignored and runner-local; it is
+      # generated from the example with the key injected and dies with
+      # the job. Nothing in this step prints the key.
+      - name: Generate partner config
+        if: steps.key.outputs.present == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          import os
+
+          with open("partners/config.example.json", encoding="utf-8") as handle:
+              data = json.load(handle)
+          entry = data["partners"]["auto-reviewer"]
+          entry["enabled"] = True
+          entry.setdefault("auth", {})["gemini_api_key"] = os.environ["GEMINI_API_KEY"]
+          with open("partners/config.json", "w", encoding="utf-8") as handle:
+              json.dump(data, handle, indent=2)
+          os.chmod("partners/config.json", 0o600)
+          PYEOF
+
+      - name: Fetch pull request diff
+        if: steps.key.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr diff ${{ github.event.pull_request.number }} > diff.txt
+
+      - name: Run auto-review
+        if: steps.key.outputs.present == 'true'
+        continue-on-error: true
+        run: |
+          python3 tools/pr_review.py \
+            --diff-file diff.txt \
+            --commit-id "${{ github.event.pull_request.head.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --pr-number ${{ github.event.pull_request.number }} \
+            --out review.json
+
+      # Publishing is soft-failed as well: on a 422 (invalid comment
+      # position) the review is retried with inline comments stripped
+      # so the verdict body still lands on the PR.
+      - name: Publish review
+        if: steps.key.outputs.present == 'true' && always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -s review.json ]; then
+            echo "auto-review produced no review.json; nothing to publish"
+            exit 0
+          fi
+          if gh api -X POST \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            --input review.json > /dev/null; then
+            echo "auto-review published"
+            exit 0
+          fi
+          echo "review POST failed (likely invalid comment positions); retrying body-only"
+          python3 - <<'PYEOF'
+          import json
+
+          with open("review.json", encoding="utf-8") as handle:
+              data = json.load(handle)
+          data.pop("comments", None)
+          with open("review_body_only.json", "w", encoding="utf-8") as handle:
+              json.dump(data, handle)
+          PYEOF
+          gh api -X POST \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" \
+            --input review_body_only.json > /dev/null \
+            || echo "auto-review publish failed; skipping"

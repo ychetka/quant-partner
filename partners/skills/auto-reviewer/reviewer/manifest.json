@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "reviewer",
+  "description": "Automated advisory review of a pull-request unified diff with strict JSON artifact output.",
+  "when_to_use": "Used by the auto-review CI runner (tools/pr_review.py) through the review_code tool for an independent, non-binding pull-request review.",
+  "generation": {
+    "temperature": 0.1
+  },
+  "version": 1
+}
