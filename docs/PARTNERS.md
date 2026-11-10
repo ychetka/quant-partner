@@ -23,7 +23,7 @@ The tool surface depends on the partner's configured `toolset`:
 - `product` toolset (`gemini-product`): the canonical `ask_partner*` tools plus the legacy aliases `ask_product_partner`, `ask_product_partner_v2`, `ask_product_partner_dialog` with the same signatures.
 - `advisory` toolset (`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner`, `text-quality-partner`): `ask_partner(...)`, `ask_partner_v2(...)`, `ask_partner_dialog(...)` only - no extra aliases - plus the optional grounding fields `decision_to_make`, `options_considered`, `constraints` and `context_pack` described below.
 - Any other configured `toolset` value routes to the same generic surface (the canonical `ask_partner*` tools, no aliases) but without the grounding fields - those are gated strictly on `toolset` being `advisory`.
-- `review` toolset (`code-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
+- `review` toolset (`code-reviewer`, `auto-reviewer`): `partner_info()`, `list_partner_skills()`, `list_reviewer_models()`, `review_code(head_sha, base_sha, diff, model, strict_model?, skill?, context?, files?, review_id?)` - the conversational `ask_*` tools are not exposed.
 
 The `*_v2` ask variants take the same arguments and return a JSON object `{"partner_id", "skill", "model_requested", "model_used", "model_match", "text"}` instead of bare text, exposing model provenance.
 
@@ -135,6 +135,33 @@ Example:
 ```
 
 Boundary notes: `advisory` is always `true` - the artifact never authorizes a merge, never publishes reviews or comments, and every finding is anchored to a path and RIGHT-side line in the supplied diff. Oversized, unsafe or secret-like input is rejected before any provider access.
+
+## auto-reviewer
+
+Gemini-backed instance of the same strict advisory `review` toolset, purpose-built for automated pull-request review. It exists so CI auto-review keeps working when the `copilot-direct` backend behind `code-reviewer` hits its quota; it keeps a separate toolset, model alias and artifact cache from `code-reviewer`.
+
+- Toolset: `review` - `partner_info`, `list_partner_skills`, `list_reviewer_models`, `review_code`. No `ask_*` tools and no `list_partner_models`.
+- Default skill: `reviewer`.
+- Skills root: `skills/auto-reviewer`.
+- Backend: `gemini`; the single allowlisted model alias `gemini` pins `gemini-3.5-flash` (`match: exact`).
+- The caller-facing runner `tools/pr_review.py` invokes `review_code` and folds the artifact into a GitHub PR-review payload; see [README.md](../README.md) under "Auto PR review".
+
+| Skill | When to use |
+| --- | --- |
+| `reviewer` | Used by the auto-review CI runner (tools/pr_review.py) through the review_code tool for an independent, non-binding pull-request review. |
+
+Call it when:
+
+- You run the `auto_review` GitHub workflow or `tools/pr_review.py` and need the reviewed artifact behind `AUTO_REVIEW_VERDICT`.
+- You want the same fail-closed artifact contract as `code-reviewer` served by the Gemini backend instead of Copilot.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "review_code", "arguments": {"head_sha": "<40-hex PR head sha>", "base_sha": "<40-hex PR base sha>", "diff": "diff --git a/tools/pr_review.py b/tools/pr_review.py\n...", "model": "gemini"}}}
+```
+
+Boundary notes: same advisory guarantees as `code-reviewer` - `advisory` is always `true`, findings anchor to RIGHT-side diff lines only, and oversized, unsafe or secret-like input is rejected before any provider access. The instance never posts to GitHub itself; publication is the workflow's job via `GITHUB_TOKEN`.
 
 ## pm-partner
 

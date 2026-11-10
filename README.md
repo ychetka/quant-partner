@@ -12,6 +12,7 @@ One Python entrypoint runs multiple partner instances. Each instance has its own
 - `gh-copilot-partner` - code, architecture, stack, review and debugging consultations through direct GitHub Copilot API access.
 - `gemini-product` - product management, UX architecture, prioritization, release-note drafting and advisory spec compliance verification through the Gemini API.
 - `code-reviewer` - advisory second-opinion review of unified diffs with strict model provenance.
+- `auto-reviewer` - Gemini-backed instance of the same `review` toolset that powers the automated PR review workflow.
 - `pm-partner` - B2B product management advisory: Value Proposition Canvas, MVP scoping, backlog prioritization and unit economics (`advisory` toolset, Gemini API).
 - `market-partner` - market analysis advisory: competitor matrices, segmentation and TAM/SAM/SOM estimation from caller-supplied signals (`advisory` toolset, Gemini API).
 - `strategy-partner` - strategy consulting advisory: named frameworks (SWOT/PESTEL/Porter's Five Forces/BCG), growth hypotheses and risk registers (`advisory` toolset, Gemini API).
@@ -177,6 +178,23 @@ Optional `files` entries are bounded extra context: a repo-relative path string 
 The artifact is advisory only (`advisory: true`): it never authorizes a merge and never publishes comments or reviews anywhere. Input validation, path checks and outbound secret scanning all run before any provider access, so oversized, unsafe or secret-like input is rejected without a backend call. Only `status=ok` artifacts are cached, keyed by an `idempotency_key` derived from the review inputs.
 
 When model output fails artifact validation, the service makes at most one bounded repair retry on the same resolved backend model: the retry prompt reuses the original prompt and appends a fresh nonce-delimited section with the truncated previous output and stable validation issue codes. Output containing secret-like text is never echoed back to the provider - the retry is skipped entirely - and the retry response goes through the same `model_used` provenance check. A successful repair is surfaced via the artifact warning `model output repaired after one retry`; every other outcome fails closed as `status=error`, `invalid_output`.
+
+## Auto PR review
+
+The `auto_review` workflow (`.github/workflows/auto_review.yml`) posts an automated advisory review on every pull request (`opened`, `synchronize`, `reopened`). It runs the `auto-reviewer` partner instance - the same `review` toolset as `code-reviewer`, served by the Gemini backend on `gemini-3.5-flash`, so auto-review keeps working when Copilot quota is exhausted - through `tools/pr_review.py`, then publishes the result as a `github-actions[bot]` PR review via `GITHUB_TOKEN`.
+
+How to read the posted review:
+
+- The review `event` is always `COMMENT`: advisory only, it never approves, requests changes, or blocks a merge.
+- The body opens with a machine-readable `AUTO_REVIEW_VERDICT:` line. `APPROVE` means no `blocker`/`major` findings, `REQUEST_CHANGES` means at least one, `ERROR` means the review did not complete (the payload still posts and explains why), and `DRY_RUN` marks the `--dry-run` stub skeleton where the partner call was skipped entirely.
+- Findings anchored to changed lines arrive as inline comments prefixed `[CRITICAL]`, `[WARNING]` or `[MINOR]`; anything that cannot anchor to the diff is folded into the body instead.
+
+Setup and disabling:
+
+- Requires the `GEMINI_API_KEY` repository secret configured under **Settings -> Secrets and variables -> Actions**. When the secret is absent (for example on forks) the job skips the review and posts a short note instead of failing.
+- The workflow builds `partners/config.json` from `partners/config.example.json` at job start and injects the key; the file is runner-local and never committed.
+- The job is not a required check and every fallible step soft-fails, so a broken auto-review never blocks a merge. To disable auto-review entirely, delete `.github/workflows/auto_review.yml` or gate the job with `if: false`.
+- Locally the same runner works offline against `partners/config.json`: `python3 tools/pr_review.py --diff-file diff.txt --commit-id <40-hex head sha> --out review.json` (`--dry-run` emits a stub skeleton without a partner call, `--strict` exits non-zero on partner failure).
 
 ## local-openai-partner (OpenAI-compatible endpoint)
 
