@@ -105,20 +105,35 @@ jobs:
           """Fail the job when coverage drops below the ratchet floors."""
 
           import json
+          import math
           import os
           import sys
 
           def floor(name):
               raw = os.environ.get(name, "")
               try:
-                  return float(raw)
+                  value = float(raw)
               except ValueError:
                   print(f"::error::{name}={raw!r} is not a number")
                   sys.exit(1)
+              if not math.isfinite(value):
+                  print(f"::error::{name}={raw!r} is not finite")
+                  sys.exit(1)
+              return value
+
+          def percent(entry, label):
+              value = entry.get("percent_covered")
+              if not isinstance(value, (int, float)) or not math.isfinite(value):
+                  print(f"::error::{label} has invalid percent_covered {value!r}")
+                  return None
+              return value
+
+          def reject_constant(value):
+              raise ValueError(f"non-finite JSON constant {value!r}")
 
           try:
               with open("coverage.json", encoding="utf-8") as fh:
-                  data = json.load(fh)
+                  data = json.load(fh, parse_constant=reject_constant)
           except (OSError, ValueError) as exc:
               print(f"::error::coverage.json missing or unparseable: {exc}")
               sys.exit(1)
@@ -127,10 +142,8 @@ jobs:
           http_floor = floor("COVERAGE_HTTP_FLOOR")
           copilot_floor = floor("COVERAGE_COPILOT_FLOOR")
 
-          totals = data.get("totals", {})
-          total = totals.get("percent_covered")
+          total = percent(data.get("totals", {}), "totals")
           if total is None:
-              print("::error::coverage.json has no totals.percent_covered")
               sys.exit(1)
 
           failed = False
@@ -163,12 +176,8 @@ jobs:
                       "per-file floor skipped"
                   )
                   continue
-              pct = entry.get("summary", {}).get("percent_covered")
+              pct = percent(entry.get("summary", {}), path)
               if pct is None:
-                  print(
-                      f"::error::{path} has no summary.percent_covered "
-                      "in coverage.json"
-                  )
                   failed = True
               elif pct < file_floor:
                   print(
