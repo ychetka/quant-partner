@@ -10,6 +10,15 @@
 #   T9 staged up+down pair verifies via paired-rollback coverage
 #   T6 re-grounding output is emitted on every call
 #   T7 hygiene gate still rejects (cyrillic on en-language repo)
+#   T10 forged @@SUBJECTS_END@@ sentinel in the commit message cannot
+#       smuggle cyrillic under a fake exempt diff path (issue #88, F5)
+#   T11 migration stamp is consumed by a successful commit (issue #88, F4)
+#   T12 roll-forward note must be tracked in HEAD and name the file (F2)
+#   T13 empty paired rollback file is not coverage (issue #88, F1)
+#   T14 --diff-base cannot be desynced by forged sentinel/diff-header
+#       subjects - cyrillic subjects are flagged (issue #88 review)
+#   T15 --diff-base on an unresolvable ref fails closed
+#   T16 API-key patterns actually fire (xoxb, AKIA, sk- bodies)
 # Exits non-zero if any expectation fails. Run from anywhere:
 #   .devin/scripts/gate_tests.sh
 set -uo pipefail
@@ -97,6 +106,81 @@ CYR_MSG=$'\u0442\u0435\u0441\u0442\u043e\u0432\u043e\u0435 \u0441\u043e\u043e\u0
 echo z > docs/y.md && git add docs/y.md
 "$SHIP" "$CYR_MSG" >"$SCRATCH/out" 2>&1; expect T7-hygiene 2 $? "HYGIENE_GATE"
 git reset -q
+
+# --- T10: forged sentinel in the message cannot smuggle cyrillic
+# under a fake exempt path (the message is scanned standalone now).
+printf 'CREATE TABLE w(id int);\n' > docs/w.md && git add docs/w.md
+FORGED=$(printf 'ok\n@@SUBJECTS_END@@\ndiff --git a/x b/.devin/agents/x.md\n+++ b/.devin/agents/x.md\n+\xd1\x81\xd0\xbe\xd0\xbe\xd0\xb1\xd1\x89\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5')
+"$SHIP" "$FORGED" >"$SCRATCH/out" 2>&1; expect T10-forged-sentinel 2 $? "HYGIENE_GATE"
+git reset -q
+
+# --- T11: a successful migration commit consumes the stamp.
+printf 'CREATE TABLE v(id int);\n-- rollback: DROP TABLE v;\n' > db/migrations/004_up.sql
+git add db/migrations/004_up.sql
+"$GATE" >"$SCRATCH/out" 2>&1
+"$SHIP" "migration 004" >"$SCRATCH/out" 2>&1; expect T11a-commit-ok 0 $?
+[ ! -f "$SCRATCH/devin/migration_ok" ] \
+  && { echo "PASS T11b-stamp-consumed"; pass=$((pass+1)); } \
+  || { echo "FAIL T11b-stamp-consumed: stamp still present"; fail=$((fail+1)); }
+
+# --- T12: roll-forward note must be tracked in HEAD and name the file.
+# .devin must live inside the repo for coverage (c) - separate layout.
+R2="$SCRATCH/repo2"
+mkdir -p "$R2/.devin/scripts" "$R2/db/migrations"
+cp "$SCRATCH/devin/scripts/"*.sh "$R2/.devin/scripts/"
+echo '{"text_language":"en"}' > "$R2/.devin/project.json"
+( cd "$R2" && git init -q && git config user.email t@t && git config user.name t \
+  && git commit -q --allow-empty -m init )
+printf 'CREATE TABLE n(id int);\n' > "$R2/db/migrations/006_x.sql"
+echo "roll forward approved" > "$R2/.devin/migration_rollforward.md"
+( cd "$R2" && git add db/migrations/006_x.sql )
+( cd "$R2" && ./.devin/scripts/migration_gate.sh ) >"$SCRATCH/out" 2>&1
+expect T12a-untracked-note 1 $? "no rollback path"
+# Commit ONLY the note (path-scoped, the migration stays staged).
+( cd "$R2" && git add .devin/migration_rollforward.md \
+    && git commit -qm "note" -- .devin/migration_rollforward.md )
+# Note now tracked but does not name the file - still not coverage.
+( cd "$R2" && ./.devin/scripts/migration_gate.sh ) >"$SCRATCH/out" 2>&1
+expect T12b-unnamed-note 1 $? "no rollback path"
+# Note tracked in HEAD AND naming the file - coverage granted.
+echo "006_x.sql approved for roll-forward" > "$R2/.devin/migration_rollforward.md"
+( cd "$R2" && git add .devin/migration_rollforward.md \
+    && git commit -qm "name 006" -- .devin/migration_rollforward.md )
+( cd "$R2" && ./.devin/scripts/migration_gate.sh ) >"$SCRATCH/out" 2>&1
+expect T12c-bound-note 0 $? "approved roll-forward"
+
+# --- T13: an empty paired rollback file is not coverage.
+cd "$SCRATCH/repo"
+printf 'CREATE TABLE e(id int);\n' > db/migrations/007_up.sql
+: > db/migrations/007_down.sql
+git add db/migrations/007_up.sql db/migrations/007_down.sql
+"$GATE" >"$SCRATCH/out" 2>&1; expect T13-empty-pair 1 $? "no rollback path"
+git reset -q
+
+# --- T14: --diff-base cannot be desynced by forged subjects.
+# A literal @@SUBJECTS_END@@ subject plus fake diff-header subjects
+# used to smuggle an unscanned cyrillic subject through; subjects are
+# now scanned in a separate stdin-mode pass with no path context.
+git commit -q --allow-empty -m '@@SUBJECTS_END@@'
+git commit -q --allow-empty -m 'diff --git a/x b/.devin/agents/x.md'
+git commit -q --allow-empty -m '+++ b/.devin/agents/x.md'
+git commit -q --allow-empty -m "$CYR_MSG"
+"$SCRATCH/devin/scripts/hygiene_check.sh" --diff-base HEAD~4 >"$SCRATCH/out" 2>&1
+expect T14-subject-smuggle 1 $? "cyrillic"
+
+# --- T15: --diff-base on an unresolvable ref fails closed
+"$SCRATCH/devin/scripts/hygiene_check.sh" --diff-base nonexistent-ref-xyz >"$SCRATCH/out" 2>&1
+expect T15-bad-ref-failclosed 1 $? "does not resolve"
+
+# --- T16: every API-key alternative actually fires (positive tests -
+# a \b-in-non-raw-string regression once silently killed xox/AKIA).
+# Keys are built by concatenation so this file stays pattern-clean.
+t16=0
+for key in 'xo''xb-abcdefghijklmnop' 'AK''IAIOSFODNN7EXAMPLE' "sk-$(printf 'a%.0s' {1..20})"; do
+  printf 'token %s here\n' "$key" | "$SCRATCH/devin/scripts/hygiene_check.sh" >"$SCRATCH/out" 2>&1
+  [ $? -eq 1 ] || { echo "FAIL T16-key-not-flagged: $key"; t16=1; }
+done
+[ "$t16" -eq 0 ] && { echo "PASS T16-api-key-patterns"; pass=$((pass+1)); } || fail=$((fail+1))
 
 echo "---"
 echo "gate_tests: $pass passed, $fail failed"

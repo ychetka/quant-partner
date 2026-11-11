@@ -1,9 +1,15 @@
 # Harness - session operating model
 
 Canonical process documentation for the director session model.
-Source of truth: `ai_controller/controller-manager/harness.md`
-(orchestration project); this file carries the sections adopted by
-this repository.
+Adopted from the canonical fleet rollout approved 2026-11-11;
+the model section below is byte-identical to the sessions-bridge,
+trade-ai-analitic and devin-telegram copies. Note: this file
+replaced the previous two-committee development-cycle spec, which
+still lives in `ai_controller/controller-manager/harness.md` and is
+restored here as `controller-manager/development-cycle.md` - the
+`.windsurfrules` references to G/W/T, contracts, judges and
+`failure_class` point there. The ai_controller copy itself predates
+the director-model rollout; syncing it is tracked via issue #88.
 
 ## Director session model (event-driven, approved 2026-11-11)
 
