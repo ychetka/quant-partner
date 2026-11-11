@@ -23,6 +23,12 @@ jobs:
       PARTNER_CONFIG: partners/config.example.json
       PYTHONPATH: ${{ github.workspace }}/.cov-ci
       COVERAGE_PROCESS_START: ${{ github.workspace }}/.coveragerc
+      # Coverage ratchet floors (issue #93). Baseline measured
+      # 2026-11-11 on main: 87% TOTAL. Bump procedure is documented
+      # in README.md ("Coverage floor").
+      COVERAGE_TOTAL_FLOOR: "85"
+      COVERAGE_HTTP_FLOOR: "53"
+      COVERAGE_COPILOT_FLOOR: "60"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -91,3 +97,90 @@ jobs:
           path: |
             coverage.json
             .coverage.*
+      - name: Enforce coverage floor
+        # Hard gate - intentionally no continue-on-error. Every step
+        # above is report-only, so a missing coverage.json fails here.
+        run: |
+          python3 - <<'PYEOF'
+          """Fail the job when coverage drops below the ratchet floors."""
+
+          import json
+          import os
+          import sys
+
+          def floor(name):
+              raw = os.environ.get(name, "")
+              try:
+                  return float(raw)
+              except ValueError:
+                  print(f"::error::{name}={raw!r} is not a number")
+                  sys.exit(1)
+
+          try:
+              with open("coverage.json", encoding="utf-8") as fh:
+                  data = json.load(fh)
+          except (OSError, ValueError) as exc:
+              print(f"::error::coverage.json missing or unparseable: {exc}")
+              sys.exit(1)
+
+          total_floor = floor("COVERAGE_TOTAL_FLOOR")
+          http_floor = floor("COVERAGE_HTTP_FLOOR")
+          copilot_floor = floor("COVERAGE_COPILOT_FLOOR")
+
+          totals = data.get("totals", {})
+          total = totals.get("percent_covered")
+          if total is None:
+              print("::error::coverage.json has no totals.percent_covered")
+              sys.exit(1)
+
+          failed = False
+          if total < total_floor:
+              print(
+                  f"::error::total coverage {total:.1f}% is below the "
+                  f"{total_floor:.0f}% floor (COVERAGE_TOTAL_FLOOR)"
+              )
+              failed = True
+          elif total > total_floor + 2:
+              print(
+                  f"::notice::total coverage {total:.1f}% is more than 2 "
+                  f"points above the {total_floor:.0f}% floor - raise "
+                  "COVERAGE_TOTAL_FLOOR (see README 'Coverage floor')"
+              )
+
+          files = data.get("files", {})
+          for path, file_floor, var in (
+              ("partners/core/http.py", http_floor, "COVERAGE_HTTP_FLOOR"),
+              (
+                  "partners/backends/copilot_direct.py",
+                  copilot_floor,
+                  "COVERAGE_COPILOT_FLOOR",
+              ),
+          ):
+              entry = files.get(path)
+              if entry is None:
+                  print(
+                      f"::warning::{path} absent from coverage.json - "
+                      "per-file floor skipped"
+                  )
+                  continue
+              pct = entry.get("summary", {}).get("percent_covered")
+              if pct is None:
+                  print(
+                      f"::error::{path} has no summary.percent_covered "
+                      "in coverage.json"
+                  )
+                  failed = True
+              elif pct < file_floor:
+                  print(
+                      f"::error::{path} coverage {pct:.1f}% is below the "
+                      f"{file_floor:.0f}% floor ({var})"
+                  )
+                  failed = True
+
+          if failed:
+              sys.exit(1)
+          print(
+              f"coverage floors OK: total {total:.1f}% >= "
+              f"{total_floor:.0f}%"
+          )
+          PYEOF
