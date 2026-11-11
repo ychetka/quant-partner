@@ -1,12 +1,14 @@
 # Development cycle: двухкомитетный цикл разработки
 
-> Provenance: verbatim adoption of `ai_controller/controller-manager/harness.md`
-> (two-committee development-cycle spec v1.0, approved 2026-10-29), restored
-> under its own filename by the issue #88 incident audit. The director session
-> model lives in `controller-manager/harness.md`; this document carries the
-> development-process layer (roadmap, contracts, committees, judges, G/W/T,
-> failure_class enum, step states) referenced by `.windsurfrules` and the
-> `.devin/agents/` profiles.
+> Provenance: verbatim adoption of the canonical ai_controller
+> harness spec (two-committee development-cycle spec, approved
+> 2026-10-29, director session model section updated 2026-11-11),
+> carried under its own filename since the issue #88 incident audit.
+> This document intentionally mirrors `controller-manager/harness.md`
+> 1:1 - it exists so that `.windsurfrules` and `.devin/agents/`
+> references to the development-process layer (roadmap, contracts,
+> committees, judges, G/W/T, failure_class enum, step states) resolve
+> to a stable filename. Keep the bodies byte-identical when editing.
 
 # Harness: двухкомитетный цикл разработки
 
@@ -197,9 +199,11 @@ contract.py/ts - типы (spec ссылается, не дублирует); AD
 - **Ревью - только внешнее**: директор никогда не спавнит
   reviewer на свой же PR - конфликт интересов. Reviewer-агент
   вызывается независимо (отдельная учётка ASKON-1989).
-- **Открытый факт (проверить первым)**: может ли Devin CLI
-  прервать выполняющийся ход извне (mid-turn inject)? Если нет -
-  событийная модель единственный путь, 'always-on' недостижим.
+- **Mid-turn inject - факт закрыт эмпирически (2026-11-11,
+  devin-session-bridge issue #137)**: `session/prompt` на занятой
+  сессии отклоняется сразу ("a turn is already running") - не
+  ставится в очередь и не инжектится. Событийная модель -
+  единственный путь; 'always-on' недостижим.
 
 ### Версионирование и релизы
 
