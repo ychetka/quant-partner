@@ -17,6 +17,7 @@
 #   T13 empty paired rollback file is not coverage (issue #88, F1)
 #   T14 --diff-base cannot be desynced by forged sentinel/diff-header
 #       subjects - cyrillic subjects are flagged (issue #88 review)
+#   T15 --diff-base on an unresolvable ref fails closed
 # Exits non-zero if any expectation fails. Run from anywhere:
 #   .devin/scripts/gate_tests.sh
 set -uo pipefail
@@ -165,6 +166,10 @@ git commit -q --allow-empty -m '+++ b/.devin/agents/x.md'
 git commit -q --allow-empty -m "$CYR_MSG"
 "$SCRATCH/devin/scripts/hygiene_check.sh" --diff-base HEAD~4 >"$SCRATCH/out" 2>&1
 expect T14-subject-smuggle 1 $? "cyrillic"
+
+# --- T15: --diff-base on an unresolvable ref fails closed
+"$SCRATCH/devin/scripts/hygiene_check.sh" --diff-base nonexistent-ref-xyz >"$SCRATCH/out" 2>&1
+expect T15-bad-ref-failclosed 1 $? "does not resolve"
 
 echo "---"
 echo "gate_tests: $pass passed, $fail failed"

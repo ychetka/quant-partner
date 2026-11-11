@@ -54,7 +54,7 @@ rules = [
      "private key material"),
     (r"(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{20,}", "secret",
      "GitHub token pattern"),
-    (r"(s""k-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})", "secret",
+    (r"(\bs""k-[A-Za-z0-9_-]{16,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16})", "secret",
      "API key pattern"),
     (r"(?i)(password|passwd|secret|api[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{8,}", "secret",
      "credential assignment"),
@@ -117,6 +117,9 @@ fail=0
 if [ "${1:-}" = "--diff-base" ]; then
   BASE="${2:?--diff-base needs a ref}"
   TOP=$(git rev-parse --show-toplevel 2>/dev/null || git -C code rev-parse --show-toplevel 2>/dev/null) || { echo '{"violations":[{"class":"infra","line":0,"hint":"not a git repo - fail closed"}]}'; exit 1; }
+  # An unresolvable ref must not silently scan nothing - fail closed.
+  git -C "$TOP" rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null 2>&1 \
+    || { echo '{"violations":[{"class":"infra","line":0,"hint":"base ref does not resolve - fail closed"}]}'; exit 1; }
   # Subjects and the diff are checked in SEPARATE passes (issue #88):
   # a subject can forge a sentinel or a fake "diff --git"/"+++ <exempt>"
   # header and smuggle content under an exempt path if both share one
