@@ -4,7 +4,7 @@ scope: tools
 user_visible: false
 breaking: false
 user_summary: "-"
-dev_summary: Incident audit of unreviewed rollouts (PRs #86/#87): hardened commit-wrapper gates (forged-sentinel smuggling, consume-once migration stamp, HEAD-bound roll-forward notes, NUL-safe file lists) and restored the displaced two-committee spec as controller-manager/development-cycle.md with honest harness provenance.
+dev_summary: Incident audit of unreviewed rollouts (PRs #86/#87): hardened commit-wrapper gates (forged-sentinel smuggling in both ship_commit and --diff-base paths, consume-once migration stamp, HEAD-bound roll-forward notes, NUL-safe file lists) and restored the displaced two-committee spec as controller-manager/development-cycle.md with honest harness provenance.
 why: Issue #88 - PRs #86 and #87 merged without independent review. Audit found a real hygiene bypass (a multi-line commit message could forge the @@SUBJECTS_END@@ sentinel and smuggle unscanned content under a fake exempt path), a reusable migration stamp, agent-writable roll-forward waivers, and a false provenance claim in controller-manager/harness.md that left .windsurfrules references dangling.
 refs: "issue #88"
 ---

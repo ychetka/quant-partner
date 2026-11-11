@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # hygiene_check.sh - deterministic gate for outbound text.
-# stdin: text to check. --diff: stdin is plain text followed by a raw
-# git diff (filenames parsed for path exemptions). --diff-base <ref>:
-# check commit subjects + added lines of the diff vs <ref>.
+# stdin: text to check. --diff: stdin is a raw git diff (filenames
+# parsed for path exemptions). --diff-base <ref>: check commit
+# subjects + added lines of the diff vs <ref>.
 # Exit 0 = clean. Exit 1 = violations JSON.
 set -uo pipefail
 
@@ -19,24 +19,9 @@ if [ -f "$PJ" ]; then
   CYR_PATHS=$(HYGIENE_PJ="$PJ" python3 -c "import json,os;print(json.dumps(json.load(open(os.environ['HYGIENE_PJ'])).get('cyrillic_paths',[])))" 2>/dev/null || echo '[]')
 fi
 
-MODE="stdin"
-if [ "${1:-}" = "--diff-base" ]; then
-  MODE="diff"
-  BASE="${2:?--diff-base needs a ref}"
-  TOP=$(git rev-parse --show-toplevel 2>/dev/null || git -C code rev-parse --show-toplevel 2>/dev/null) || { echo '{"violations":[{"class":"infra","line":0,"hint":"not a git repo - fail closed"}]}'; exit 1; }
-  INPUT=$( { git -C "$TOP" log --format=%s "${BASE}..HEAD" 2>/dev/null; printf '\n@@SUBJECTS_END@@\n'; git -C "$TOP" diff "${BASE}..HEAD" -- ':(exclude)*.lock'; } )
-elif [ "${1:-}" = "--diff" ]; then
-  MODE="diff"
-  INPUT=$(cat)
-else
-  INPUT=$(cat)
-fi
-
-INPUT_FILE=$(mktemp)
-trap 'rm -f "$INPUT_FILE"' EXIT
-printf '%s' "$INPUT" > "$INPUT_FILE"
-HYGIENE_INPUT_FILE="$INPUT_FILE" HYGIENE_LANG="$LANG" HYGIENE_MODE="$MODE" \
-HYGIENE_CYR_PATHS="$CYR_PATHS" python3 - <<'PYEOF'
+run_check() { # $1 = file to scan, $2 = mode (stdin|diff)
+  HYGIENE_INPUT_FILE="$1" HYGIENE_LANG="$LANG" HYGIENE_MODE="$2" \
+  HYGIENE_CYR_PATHS="$CYR_PATHS" python3 - <<'PYEOF'
 import json, os, re, sys
 lang = os.environ.get("HYGIENE_LANG", "en")
 mode = os.environ.get("HYGIENE_MODE", "stdin")
@@ -76,29 +61,21 @@ rules = [
 ]
 
 # In diff mode each checked line carries the file it was added to;
-# plain text before the first `diff --git` (subjects/messages) has no path.
+# any non-diff content is scanned as plain text with no path context.
+# Subjects and diffs are NEVER mixed into one stream - callers scan
+# them separately, so no sentinel can be forged by input content.
 def items():
-    # In --diff-base mode INPUT is subjects + sentinel + raw diff. Subjects
-    # are attacker-controlled text (commit messages) and must never feed the
-    # diff state machine - a subject like "diff --git a/x b/x" could desync
-    # path tracking and smuggle exempted cyrillic. Split first.
-    body = text
-    if mode == "diff" and "\n@@SUBJECTS_END@@\n" in text:
-        subjects, body = text.split("\n@@SUBJECTS_END@@\n", 1)
-        for line in subjects.splitlines():
-            yield line, None  # subjects scanned with no path context
     path = None
     in_diff = mode != "diff"
     header = False
-    for line in body.splitlines():
+    for line in text.splitlines():
         if mode == "diff" and line.startswith("diff --git"):
             in_diff = True
             header = True
             path = ""
+            yield line, None  # filenames are outbound text too
             continue
         if mode == "diff" and not in_diff:
-            # Commit-message preamble before the first file diff: scanned
-            # as plain text, never allowed to steer the path state.
             yield line, None
             continue
         if mode == "diff" and line.startswith("@@"):
@@ -109,6 +86,7 @@ def items():
                 path = line[6:]
             else:
                 path = line[4:]
+            yield line, None  # scan the path itself with no exemption
             continue
         if mode == "diff" and line.startswith("+"):
             yield line, path
@@ -133,3 +111,29 @@ if violations:
     sys.exit(1)
 sys.exit(0)
 PYEOF
+}
+
+fail=0
+if [ "${1:-}" = "--diff-base" ]; then
+  BASE="${2:?--diff-base needs a ref}"
+  TOP=$(git rev-parse --show-toplevel 2>/dev/null || git -C code rev-parse --show-toplevel 2>/dev/null) || { echo '{"violations":[{"class":"infra","line":0,"hint":"not a git repo - fail closed"}]}'; exit 1; }
+  # Subjects and the diff are checked in SEPARATE passes (issue #88):
+  # a subject can forge a sentinel or a fake "diff --git"/"+++ <exempt>"
+  # header and smuggle content under an exempt path if both share one
+  # stream. Stdin mode gives subjects no path context (no exemptions).
+  F1=$(mktemp); F2=$(mktemp)
+  trap 'rm -f "$F1" "$F2"' EXIT
+  git -C "$TOP" log --format=%s "${BASE}..HEAD" > "$F1" 2>/dev/null
+  git -C "$TOP" diff "${BASE}..HEAD" -- ':(exclude)*.lock' > "$F2"
+  run_check "$F1" stdin || fail=1
+  run_check "$F2" diff || fail=1
+elif [ "${1:-}" = "--diff" ]; then
+  F1=$(mktemp); trap 'rm -f "$F1"' EXIT
+  cat > "$F1"
+  run_check "$F1" diff || fail=1
+else
+  F1=$(mktemp); trap 'rm -f "$F1"' EXIT
+  cat > "$F1"
+  run_check "$F1" stdin || fail=1
+fi
+exit $fail

@@ -15,6 +15,8 @@
 #   T11 migration stamp is consumed by a successful commit (issue #88, F4)
 #   T12 roll-forward note must be tracked in HEAD and name the file (F2)
 #   T13 empty paired rollback file is not coverage (issue #88, F1)
+#   T14 --diff-base cannot be desynced by forged sentinel/diff-header
+#       subjects - cyrillic subjects are flagged (issue #88 review)
 # Exits non-zero if any expectation fails. Run from anywhere:
 #   .devin/scripts/gate_tests.sh
 set -uo pipefail
@@ -152,6 +154,17 @@ printf 'CREATE TABLE e(id int);\n' > db/migrations/007_up.sql
 git add db/migrations/007_up.sql db/migrations/007_down.sql
 "$GATE" >"$SCRATCH/out" 2>&1; expect T13-empty-pair 1 $? "no rollback path"
 git reset -q
+
+# --- T14: --diff-base cannot be desynced by forged subjects.
+# A literal @@SUBJECTS_END@@ subject plus fake diff-header subjects
+# used to smuggle an unscanned cyrillic subject through; subjects are
+# now scanned in a separate stdin-mode pass with no path context.
+git commit -q --allow-empty -m '@@SUBJECTS_END@@'
+git commit -q --allow-empty -m 'diff --git a/x b/.devin/agents/x.md'
+git commit -q --allow-empty -m '+++ b/.devin/agents/x.md'
+git commit -q --allow-empty -m "$CYR_MSG"
+"$SCRATCH/devin/scripts/hygiene_check.sh" --diff-base HEAD~4 >"$SCRATCH/out" 2>&1
+expect T14-subject-smuggle 1 $? "cyrillic"
 
 echo "---"
 echo "gate_tests: $pass passed, $fail failed"
