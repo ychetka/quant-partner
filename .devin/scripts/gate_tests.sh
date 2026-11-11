@@ -18,6 +18,7 @@
 #   T14 --diff-base cannot be desynced by forged sentinel/diff-header
 #       subjects - cyrillic subjects are flagged (issue #88 review)
 #   T15 --diff-base on an unresolvable ref fails closed
+#   T16 API-key patterns actually fire (xoxb, AKIA, sk- bodies)
 # Exits non-zero if any expectation fails. Run from anywhere:
 #   .devin/scripts/gate_tests.sh
 set -uo pipefail
@@ -170,6 +171,16 @@ expect T14-subject-smuggle 1 $? "cyrillic"
 # --- T15: --diff-base on an unresolvable ref fails closed
 "$SCRATCH/devin/scripts/hygiene_check.sh" --diff-base nonexistent-ref-xyz >"$SCRATCH/out" 2>&1
 expect T15-bad-ref-failclosed 1 $? "does not resolve"
+
+# --- T16: every API-key alternative actually fires (positive tests -
+# a \b-in-non-raw-string regression once silently killed xox/AKIA).
+# Keys are built by concatenation so this file stays pattern-clean.
+t16=0
+for key in 'xo''xb-abcdefghijklmnop' 'AK''IAIOSFODNN7EXAMPLE' "sk-$(printf 'a%.0s' {1..20})"; do
+  printf 'token %s here\n' "$key" | "$SCRATCH/devin/scripts/hygiene_check.sh" >"$SCRATCH/out" 2>&1
+  [ $? -eq 1 ] || { echo "FAIL T16-key-not-flagged: $key"; t16=1; }
+done
+[ "$t16" -eq 0 ] && { echo "PASS T16-api-key-patterns"; pass=$((pass+1)); } || fail=$((fail+1))
 
 echo "---"
 echo "gate_tests: $pass passed, $fail failed"

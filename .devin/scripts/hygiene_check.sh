@@ -54,7 +54,11 @@ rules = [
      "private key material"),
     (r"(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{20,}", "secret",
      "GitHub token pattern"),
-    (r"(\bs""k-[A-Za-z0-9_-]{16,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16})", "secret",
+    # The s" "k- split keeps the literal "sk-" out of this file's own
+    # source (the gate would flag itself). BOTH halves must be raw
+    # strings: a non-raw literal would compile \b to a backspace and
+    # silently kill the alternatives (issue #88 review finding).
+    (r"(\bs" r"k-[A-Za-z0-9_-]{16,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16})", "secret",
      "API key pattern"),
     (r"(?i)(password|passwd|secret|api[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{8,}", "secret",
      "credential assignment"),
