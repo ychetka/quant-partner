@@ -10,8 +10,15 @@
 #   b) the file itself contains a rollback/downgrade section
 #      (down|undo|rollback|revert|downgrade), or
 #   c) an approved roll-forward note exists at
-#      .devin/migration_rollforward.md (human-approved, contains the
-#      justification for going forward-only)
+#      .devin/migration_rollforward.md AND is already tracked in HEAD
+#      (i.e. passed review in an earlier commit) AND names each
+#      migration file it covers. A working-tree-only or generic note
+#      does not waive coverage - the agent could write it ad hoc.
+#
+# Note on strength: this gate verifies that a rollback path EXISTS for
+# every staged migration; it does not verify the rollback is correct.
+# It is a tripwire for a hasty-but-honest caller, not a cryptographic
+# control - the caller can already run arbitrary commands.
 #
 # Optional: if the project provides a native dry-run entrypoint via
 # DRY_RUN_CMD env var, it is executed in a subshell with a timeout —
@@ -24,6 +31,15 @@ set -uo pipefail
 DEVIN_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TOP=$(git rev-parse --show-toplevel 2>/dev/null || git -C code rev-parse --show-toplevel 2>/dev/null) || { echo "not a git repo" >&2; exit 1; }
 cd "$TOP"
+# Path of .devin relative to the repo root, for HEAD lookups of
+# tracked files like migration_rollforward.md. Empty when .devin sits
+# outside the repo (shared_person layout) - the note then cannot be
+# tracked and coverage (c) is unavailable by design.
+DEVIN_DIR_REL=""
+case "$DEVIN_DIR" in
+  "$TOP")   DEVIN_DIR_REL="." ;;
+  "$TOP/"*) DEVIN_DIR_REL="${DEVIN_DIR#"$TOP"/}" ;;
+esac
 
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
@@ -41,7 +57,7 @@ is_rollback_name() {
 
 # Staged files needing coverage: migration-pattern paths that are not
 # themselves rollback artifacts.
-mapfile -t all_mig < <(git diff --cached --name-only --diff-filter=AMR | grep -E "$MIG_PAT" || true)
+mapfile -t -d '' all_mig < <(git diff --cached --name-only -z --diff-filter=AMR | grep -zE "$MIG_PAT" || true)
 staged=(); pairs=()
 for f in ${all_mig[@]+"${all_mig[@]}"}; do
   if is_rollback_name "$f"; then pairs+=("$f"); else staged+=("$f"); fi
@@ -69,18 +85,26 @@ fail=0
 for f in "${staged[@]}"; do
   covered=""
   stem=$(stemof "$f")
-  # a) staged paired rollback file sharing the same stem
+  # a) staged paired rollback file sharing the same stem, with a
+  #    non-empty staged blob (an empty rollback file is no coverage)
   for p in ${pairs[@]+"${pairs[@]}"}; do
     [ "$p" = "$f" ] && continue
-    [ "$(stemof "$p")" = "$stem" ] && { covered="paired rollback: $p"; break; }
+    [ "$(stemof "$p")" = "$stem" ] \
+      && git show ":$p" 2>/dev/null | grep -q '[^[:space:]]' \
+      && { covered="paired rollback: $p"; break; }
   done
   # b) embedded rollback/downgrade section in the STAGED blob
   #    (index content, not the working copy - they may differ)
   if [ -z "$covered" ] && git show ":$f" 2>/dev/null | grep -qiE "$ROLLBACK_RE"; then
     covered="embedded rollback section"
   fi
-  # c) approved roll-forward note
-  if [ -z "$covered" ] && [ -s "$DEVIN_DIR/migration_rollforward.md" ]; then
+  # c) approved roll-forward note: must be tracked in HEAD (passed
+  #    review in an earlier commit) and name this migration file.
+  if [ -z "$covered" ] && [ -n "$DEVIN_DIR_REL" ] \
+     && [ -s "$DEVIN_DIR/migration_rollforward.md" ] \
+     && git cat-file -e "HEAD:$DEVIN_DIR_REL/migration_rollforward.md" 2>/dev/null \
+     && git show "HEAD:$DEVIN_DIR_REL/migration_rollforward.md" 2>/dev/null \
+        | grep -qF "$(basename "$f")"; then
     covered="approved roll-forward (.devin/migration_rollforward.md)"
   fi
   if [ -z "$covered" ]; then

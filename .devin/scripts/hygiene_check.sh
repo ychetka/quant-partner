@@ -13,8 +13,10 @@ PJ="$DEVIN_DIR/project.json"
 LANG="en"
 CYR_PATHS="[]"
 if [ -f "$PJ" ]; then
-  LANG=$(python3 -c "import json;print(json.load(open('$PJ')).get('text_language','en'))" 2>/dev/null || echo en)
-  CYR_PATHS=$(python3 -c "import json;print(json.dumps(json.load(open('$PJ')).get('cyrillic_paths',[])))" 2>/dev/null || echo '[]')
+  # Path passed via env - never interpolated into Python source
+  # (a quote in the path would otherwise be a code-injection sink).
+  LANG=$(HYGIENE_PJ="$PJ" python3 -c "import json,os;print(json.load(open(os.environ['HYGIENE_PJ'])).get('text_language','en'))" 2>/dev/null || echo en)
+  CYR_PATHS=$(HYGIENE_PJ="$PJ" python3 -c "import json,os;print(json.dumps(json.load(open(os.environ['HYGIENE_PJ'])).get('cyrillic_paths',[])))" 2>/dev/null || echo '[]')
 fi
 
 MODE="stdin"
@@ -67,7 +69,7 @@ rules = [
      "private key material"),
     (r"(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{20,}", "secret",
      "GitHub token pattern"),
-    (r"(s""k-|xox[baprs]-|AKIA[0-9A-Z]{16})", "secret",
+    (r"(s""k-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})", "secret",
      "API key pattern"),
     (r"(?i)(password|passwd|secret|api[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{8,}", "secret",
      "credential assignment"),
