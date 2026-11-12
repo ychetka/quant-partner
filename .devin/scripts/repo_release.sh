@@ -13,7 +13,7 @@
 # tag already existing on a different commit. The patch|minor|major
 # argument is accepted for compatibility; the tag always follows
 # pyproject, not latest_tag + 1 (the devin-telegram version-drift
-# incident of 2026-11-12 - same fix ported here, issue #155).
+# incident of 2026-11-12 - same fix ported here, upstream issue #155).
 # Output JSON: {status: released|error, tag?, from?, message?}
 set -uo pipefail
 TOP=$(git rev-parse --show-toplevel 2>/dev/null || git -C code rev-parse --show-toplevel 2>/dev/null) || { echo "not a git repo" >&2; exit 1; }
@@ -104,7 +104,7 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   # Idempotent re-run: the release landed on a previous attempt but
   # the success output was lost - report released instead of failing
   # on the already-existing release. Kept from the pre-port canon
-  # version; the upstream rewrite dropped it (issue #155).
+  # version; the upstream rewrite dropped it (upstream issue #155).
   echo "{\"status\":\"released\",\"tag\":\"$TAG\",\"from\":\"$LATEST\",\"sha\":\"$SHA\",\"note\":\"already-existed\"}"
   exit 0
 fi

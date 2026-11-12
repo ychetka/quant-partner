@@ -113,6 +113,7 @@ fi
 # check (tools/check_version_tag.sh + .github/workflows/
 # version-tag.yml in this repo; the canonical comment refers to the
 # upstream workflow).
+export RELEASE
 if ! git fetch "$REMOTE" "$BASE" >/dev/null 2>&1; then
   RELEASE='{"status":"skipped","reason":"fetch_failed"}'
 elif [ -z "$PRE_MERGE_SHA" ]; then
