@@ -1,0 +1,1 @@
+docs: add design spec for the local text-quality gate metric (`.devin/spec_text_gate_metric.md`) — partner-logprob perplexity tier with caching, multi-register corpus packs, veto + logistic composite, Pangram validation protocol (Spearman rho >= 0.6), explicit honest-capability boundaries. Spec only; implementation lives in Shared Person.
