@@ -46,11 +46,22 @@ PRIMARY path = partner logprob calls (developer decision
 quality, and the partner layer already exists.
 
 - **Tier A (primary): Gemini `logprobs`/`topLogprobs` via the
-  gemini-product backend** (generateContent response logprobs;
-  alternative: Copilot models through the copilot backend if its
-  API exposes logprobs - capability check is an implementation
-  precondition). Feed the doc, request token logprobs, reduce to
-  per-sentence and per-doc mean log-likelihood.
+  gemini-product backend** (alternative: Copilot models through
+  the copilot backend - capability check is a precondition for
+  EITHER backend and is called out as implementation step 1).
+- Scoring mechanic (important): API `responseLogprobs` describe
+  tokens the model GENERATES, not the input document - a document
+  cannot be scored by posting it and reading response logprobs
+  directly. The doc-scoring scheme is: send the document chunk as
+  a constrained continuation task (prompt prefix + instruction to
+  echo/continue verbatim, or chunked "continue from this context"
+  passes) and reduce the returned per-token logprobs to
+  per-sentence and per-doc mean log-likelihood. The exact
+  prompt/chunking scheme must be validated in step 1 against
+  known human/AI samples before trusting any number it emits;
+  if neither backend can produce usable doc logprobs, the local
+  tier becomes interim primary and the gap is reported, not
+  papered over.
 - **Result caching is mandatory**: cache by content-hash of the
   input doc (same convention as the media-partner transcript
   artifacts) so repeat scoring of unchanged text is free and
@@ -66,7 +77,7 @@ quality, and the partner layer already exists.
   outage degrades to the fallback tier, it does not stall the
   gate.
 - **Fallback tier (budget/efficiency overflow or partner down)**:
-  KenLM 5-gram trained on the ACTIVE register corpus (see 1.5),
+  KenLM 5-gram trained on the ACTIVE register corpus (S1-corpus),
   then optionally Qwen2.5-0.5B GGUF via llama.cpp for the
   ambiguous band. Local tier is explicitly second-class: when it
   runs, output carries `confidence=low` and `lm_tier="local"`.
@@ -79,7 +90,7 @@ quality, and the partner layer already exists.
   If neither partner nor local tier is available: `degraded=true`,
   feature excluded, `confidence=low`.
 
-### 1.5. Multi-register corpora (developer decision)
+### S1-corpus. Multi-register corpora (developer decision)
 
 - Corpus `style_corpus` = the developer's own texts, continuously
   expanding, PLUS a Habr scrape in the conversational-technical
@@ -106,6 +117,9 @@ quality, and the partner layer already exists.
 
 - Variance (and IQR) of per-sentence log-likelihood from whichever
   tier produced S1. Human text spikes; LLM text is smooth.
+- Degrades WITH S1 by definition: when S1 is `degraded` (no LM
+  tier ran) or `lm_tier="none"`, `burst_var` is itself `degraded`
+  and excluded - it has no independent signal source.
 - Feature: `burst_var`, normalized against the same register
   corpus.
 
@@ -144,7 +158,8 @@ brittleness at the boundary).
 
 1. Veto rules fire first. Rare by design; each logs `veto_reason`.
    Example candidate: `lex_hits_per_1k > EXTREME` (calibrated on
-   the labeled set, not guessed) -> `p_ai` ceiling + forced review.
+   the labeled set, not guessed) -> `p_ai` is set to a fixed high
+   value (e.g., 0.9) and the doc is forced to human review.
 2. Logistic regression over {loglik_z, burst_var, mono_score,
    lex_hits_per_1k} trained on the labeled batch. Probabilistic
    [0,1] output, inspectable coefficients, and - key failure-mode
@@ -161,15 +176,21 @@ Output contract (per doc):
 { "p_ai": float 0-1,
   "veto_triggered": bool, "veto_reason": str|null,
   "features": {loglik_z, burst_var, mono_score, lex_hits_per_1k},
-  "register": str, "register_source": "declared"|"auto",
+  "degraded_features": [str],   # e.g. ["loglik_z","burst_var"];
+                              # excluded features listed here, not
+                              # silently absent (sec.5 mandate)
+  "register": str,
+  "register_source": "declared"|"auto"|"unknown",
   "lm_tier": "partner"|"local"|"none",
   "confidence": "high"|"low" }   # low when a tier is degraded
 ```
 
-Gate bands (initial, recalibrate after validation): `p_ai < 0.35`
-pass-pre-gate; `0.35-0.7` -> rework loop with text-quality-partner;
-`> 0.7` -> obvious-AI, skip the Pangram call, send to rework or
-human. Bands are thresholds for ACTION, not truth claims.
+Gate bands (initial, recalibrate after validation; boundaries
+inclusive of the lower edge): `p_ai < 0.35` pass-pre-gate;
+`0.35 <= p_ai < 0.7` -> rework loop with text-quality-partner;
+`p_ai >= 0.7` -> obvious-AI, skip the Pangram call, send to
+rework or human. Bands are thresholds for ACTION, not truth
+claims.
 
 ## 3. Validation protocol vs Pangram
 
@@ -181,6 +202,13 @@ dependency.
    (code-stripped by the SAME strip path - strip artifacts must
    not confound the comparison). Plus the human control set from
    the humanizer plan's baseline step. Label the register per doc.
+   **Disjointness**: docs used for corpus-pack reference stats or
+   KenLM training MUST NOT also appear in the labeled batch -
+   overlap (e.g., the same Habr material feeding both reference
+   distributions and eval docs) leaks the reference distribution
+   into the measurement and inflates Spearman rho. Maintain an
+   explicit held-out split; a doc's role (corpus-pack vs eval)
+   is recorded.
 2. Score every doc with the composite AND Pangram; compute
    **Spearman rho** between `p_ai` and Pangram's AI probability.
    At n=60-80 the 95% CI is roughly +-0.15-0.2 - this is a
