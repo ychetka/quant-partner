@@ -21,8 +21,15 @@ only when it carries ONE of:
   the documented opt-out for pure docs/ops changes that produce no
   release notes.
 
-A version bump is NOT required per PR: versioning stays on the release
-step so parallel PRs cannot collide on the version number.
+Version model (issue #95, canonical): the release tag derives from
+`[project].version` in `pyproject.toml` on the base head -
+`repo_merge.sh` cuts the release automatically when a merge changes
+it. A PR that should produce a release bumps `version` on its own
+item branch before merge; `tools/release_notes.sh --version X.Y.Z
+--apply` folds pending fragments into `CHANGELOG.md` as part of that
+bump. PRs without a version bump merge without a release on purpose.
+Parallel-PR version collisions are resolved by rebasing the losing
+branch onto the merged bump.
 
 Required frontmatter fields (indented continuation lines fold into
 the previous field's value):

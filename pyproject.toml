@@ -1,0 +1,11 @@
+# Minimal project metadata - the canonical version source.
+# repo_release.sh / repo_merge.sh derive the release tag from
+# [project].version on the base head (fail-closed when absent).
+# This repository has no packaging dependencies; the file is a
+# version contract, not a build configuration. Bump the version on
+# the item branch before merge (see .changes/README.md).
+[project]
+name = "quant-partner"
+version = "0.2.2"
+description = "Advisory partner MCP servers - stateless consultation layer for Devin sessions"
+requires-python = ">=3.11"
