@@ -469,6 +469,10 @@ Live calls through provider-backed tools (`ask_*`, `list_partner_models`) requir
 
 The smoke client exits nonzero when the server returns a JSON-RPC error, a tool result with `isError`, a missing response or a non-JSON stdout line.
 
+### Coverage floor
+
+The CI `Coverage` workflow (`coverage.yml`) measures coverage over the unit tests plus two `mcp_smoke` runs and exports `coverage.json`. The measurement steps are report-only (`continue-on-error`), but a final `Enforce coverage floor` step hard-fails the job when `coverage.json` is missing/unparseable or when coverage drops below the ratchet floors stored as job-level env vars: `COVERAGE_TOTAL_FLOOR` (total `percent_covered`, currently `85`), `COVERAGE_HTTP_FLOOR` (`partners/core/http.py`, currently `52`) and `COVERAGE_COPILOT_FLOOR` (`partners/backends/copilot_direct.py`, currently `60`). A per-file check is skipped with a warning when that file is absent from `coverage.json`. When the total exceeds the floor by more than 2 points the step emits a notice asking to raise `COVERAGE_TOTAL_FLOOR`. To bump a floor: re-measure coverage on `main`, raise the env value in the same PR that needs it, and note the measured value in the PR description. The floors were baselined at 87% TOTAL on 2026-11-11.
+
 ## Notes
 
 Direct Copilot access uses an internal token exchange and therefore carries more compatibility risk than the public Gemini API. Keep the backend isolated and prefer clear errors over silent fallbacks. Model availability is plan-dependent; always trust `list_partner_models()` over a hardcoded list.
