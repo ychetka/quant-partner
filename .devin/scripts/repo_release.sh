@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # repo_release.sh - tag + GitHub release after a merged PR.
 # Usage: repo_release.sh [patch|minor|major|auto] [--notes "<text>"]
-# Release-prep step (issue #96): run `tools/release_notes.sh
+# Release-prep step (upstream issue #96): run `tools/release_notes.sh
 # --version X.Y.Z --apply` on the release branch BEFORE tagging -
 # it folds pending .changes/ entries into CHANGELOG.md so this
 # script tags a head that already carries the changelog.

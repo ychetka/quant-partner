@@ -62,7 +62,7 @@ if [ "$OK" != "yes" ]; then
   exit 1
 fi
 
-# issue #135: the release-notes record is part of the objective gate -
+# upstream issue #135: the release-notes record is part of the objective gate -
 # a PR without a new .changes fragment, a folded CHANGELOG.md change,
 # or the no-changes-entry marker does not merge.
 ENTRY=$(bash "$TOP/tools/check_changes_entry.sh" --pr "$PR" 2>&1 | tail -n 1)
@@ -84,12 +84,15 @@ fi
 # version-bump merge for any merge method (squash, merge, rebase) -
 # a post-merge "base~1" would resolve to the PR's penultimate commit
 # on multi-commit rebase merges and silently read a bump as unchanged.
-# Canon adaptation (issue #155): upstream hardcodes origin, but this
+# Canon adaptation (upstream issue #155): upstream hardcodes origin, but this
 # repo's github remote may be named 'github' - resolve it the same
 # way repo_release.sh does.
 REMOTE=$(git remote get-url origin >/dev/null 2>&1 && echo origin \
          || git remote -v | awk '$2 ~ /github\.com/ {print $1; exit}')
-git fetch "$REMOTE" "$BASE" >/dev/null 2>&1 || true
+if ! git fetch "$REMOTE" "$BASE" >/dev/null 2>&1; then
+  echo "warning: fetch of $REMOTE/$BASE failed - the pre-merge" \
+       "version baseline may be stale" >&2
+fi
 PRE_MERGE_SHA=$(git rev-parse --verify -q "$REMOTE/$BASE" 2>/dev/null || true)
 
 ERR=$(gh pr merge "$PR" --"$METHOD" --match-head-commit "$EXPECTED" 2>&1)
@@ -100,14 +103,16 @@ if [ $rc -ne 0 ]; then
 fi
 
 # Post-merge release (the devin-telegram 2026-11-12 version-drift
-# incident - same fix ported here, issue #155): when the merge changed
-# [project].version on the base head, the release step is part of the
-# merge operation, not a separate agent duty - merges done through
-# this wrapper can no longer land untagged versions. Merges that did
-# not bump the version produce no tag on purpose (docs/fix PRs never
-# meant a release train step). Human merges via the GitHub UI are
-# covered by the version-tag CI check instead.
-export RELEASE='"skipped"'
+# incident - same fix ported here, upstream ai_controller issue
+# #155): when the merge changed [project].version on the base head,
+# the release step is part of the merge operation, not a separate
+# agent duty - merges done through this wrapper can no longer land
+# untagged versions. Merges that did not bump the version produce no
+# tag on purpose (docs/fix PRs never meant a release train step).
+# Human merges via the GitHub UI are covered by the version-tag CI
+# check (tools/check_version_tag.sh + .github/workflows/
+# version-tag.yml in this repo; the canonical comment refers to the
+# upstream workflow).
 if ! git fetch "$REMOTE" "$BASE" >/dev/null 2>&1; then
   RELEASE='{"status":"skipped","reason":"fetch_failed"}'
 elif [ -z "$PRE_MERGE_SHA" ]; then
