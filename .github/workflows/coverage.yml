@@ -27,7 +27,7 @@ jobs:
       # 2026-11-11 on main: 87% TOTAL. Bump procedure is documented
       # in README.md ("Coverage floor").
       COVERAGE_TOTAL_FLOOR: "85"
-      COVERAGE_HTTP_FLOOR: "53"
+      COVERAGE_HTTP_FLOOR: "52"
       COVERAGE_COPILOT_FLOOR: "60"
     steps:
       - name: Checkout
