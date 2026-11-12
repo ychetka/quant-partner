@@ -11,7 +11,7 @@ PR="${1:?usage: repo_merge.sh <pr_number> <expected_head_sha> [method]}"
 EXPECTED="${2:?expected head sha required}"
 METHOD="${3:-squash}"
 
-INFO=$(gh pr view "$PR" --json headRefOid,baseRefName,mergeable,reviews,statusCheckRollup,mergeStateStatus 2>&1) || {
+INFO=$(gh pr view "$PR" --json headRefOid,baseRefName,mergeable,reviews,statusCheckRollup,mergeStateStatus,labels 2>&1) || {
   echo "{\"status\":\"error\",\"failure_class\":\"upstream_error\",\"message\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$INFO")}"
   exit 1
 }
@@ -55,14 +55,20 @@ print(json.dumps(report))
 PY
 )
 
-OK=$(echo "$GATE" | python3 -c 'import json,sys;g=json.load(sys.stdin);print("yes" if all([g["head_match"],g["mergeable"],g["approved"],g["checks_green"]]) else "no")')
+OK=$(echo "$GATE" | python3 -c 'import json,sys
+try: g=json.load(sys.stdin)
+except Exception: print("no"); raise SystemExit(0)
+print("yes" if all([g["head_match"],g["mergeable"],g["approved"],g["checks_green"]]) else "no")')
 
 if [ "$OK" != "yes" ]; then
-  echo "$GATE" | python3 -c 'import json,sys;g=json.load(sys.stdin);fc="stale_head" if not g["head_match"] else "gate_blocked";print(json.dumps({"status":"blocked","failure_class":fc,"gate_report":g}))'
+  echo "$GATE" | python3 -c 'import json,sys
+try: g=json.load(sys.stdin)
+except Exception: g={"head_match":False,"unparseable_gate_report":True}
+fc="stale_head" if not g["head_match"] else "gate_blocked";print(json.dumps({"status":"blocked","failure_class":fc,"gate_report":g}))'
   exit 1
 fi
 
-# upstream issue #135: the release-notes record is part of the objective gate -
+# issue #135: the release-notes record is part of the objective gate -
 # a PR without a new .changes fragment, a folded CHANGELOG.md change,
 # or the no-changes-entry marker does not merge.
 ENTRY=$(bash "$TOP/tools/check_changes_entry.sh" --pr "$PR" 2>&1 | tail -n 1)
@@ -84,16 +90,58 @@ fi
 # version-bump merge for any merge method (squash, merge, rebase) -
 # a post-merge "base~1" would resolve to the PR's penultimate commit
 # on multi-commit rebase merges and silently read a bump as unchanged.
-# Canon adaptation (upstream issue #155): upstream hardcodes origin, but this
+# Canon adaptation (issue #155): upstream hardcodes origin, but this
 # repo's github remote may be named 'github' - resolve it the same
 # way repo_release.sh does.
 REMOTE=$(git remote get-url origin >/dev/null 2>&1 && echo origin \
          || git remote -v | awk '$2 ~ /github\.com/ {print $1; exit}')
-if ! git fetch "$REMOTE" "$BASE" >/dev/null 2>&1; then
-  echo "warning: fetch of $REMOTE/$BASE failed - the pre-merge" \
-       "version baseline may be stale" >&2
-fi
+git fetch "$REMOTE" "$BASE" >/dev/null 2>&1 || true
 PRE_MERGE_SHA=$(git rev-parse --verify -q "$REMOTE/$BASE" 2>/dev/null || true)
+
+VER_AT() { git show "$1:pyproject.toml" 2>/dev/null | awk -F= '
+  /^\[project\]/ {inp=1; next} /^\[/ {inp=0}
+  inp && /^[[:space:]]*version[[:space:]]*=/ {
+    v=$2; gsub(/["'"'"'[:space:]]/, "", v); print v; exit }'; }
+
+# Pre-merge version gate (developer ruling 2026-11-12, issue #161):
+# merging a diff that touches shipping paths without bumping
+# [project].version is a policy violation and must fail closed BEFORE
+# the merge - the post-merge "no_version_change" skip was an incident
+# source (untracked version drift). Exemptions: (a) diffs touching only
+# non-shipping paths (.devin/, docs/, tests/, workflows, fragments) -
+# nothing a release could cover; (b) PRs explicitly labeled no-release
+# (small fixups to an already-merged task). The version-tag CI check
+# remains the backstop for merges done outside this wrapper.
+CHANGED=$(gh pr diff "$PR" --name-only 2>/dev/null) || {
+  echo '{"status":"error","failure_class":"upstream_error","message":"gh pr diff failed - cannot determine shipping-path exposure"}'
+  exit 1
+}
+SHIPPING=$(echo "$CHANGED" | grep -E '^src/|^pyproject\.toml$|^uv\.lock$' || true)
+if [ -n "$SHIPPING" ]; then
+  HAS_NORELEASE=$(INFO="$INFO" python3 -c 'import json,os
+labels = {l.get("name") for l in json.loads(os.environ["INFO"]).get("labels") or []}
+print("yes" if "no-release" in labels else "no")')
+  if [ "$HAS_NORELEASE" != "yes" ]; then
+    [ -n "$PRE_MERGE_SHA" ] || {
+      echo '{"status":"error","failure_class":"upstream_error","message":"cannot resolve pre-merge base sha - refusing to merge a shipping diff"}'
+      exit 1
+    }
+    git fetch "$REMOTE" "$EXPECTED" >/dev/null 2>&1 || {
+      echo '{"status":"error","failure_class":"upstream_error","message":"cannot fetch PR head sha"}'
+      exit 1
+    }
+    OLD_VER=$(VER_AT "$PRE_MERGE_SHA")
+    HEAD_VER=$(VER_AT "$EXPECTED")
+    if [ -n "$OLD_VER" ] && { [ -z "$HEAD_VER" ] || [ "$HEAD_VER" = "$OLD_VER" ]; }; then
+      SHIPPING="$SHIPPING" OLD_VER="$OLD_VER" HEAD_VER="$HEAD_VER" python3 -c 'import json,os
+print(json.dumps({"status":"blocked","failure_class":"version_not_bumped",
+  "message":"diff touches shipping paths but [project].version is unchanged - bump the version or label the PR no-release",
+  "version":os.environ["OLD_VER"],"head_version":os.environ["HEAD_VER"] or None,
+  "shipping_paths":os.environ["SHIPPING"].splitlines()}))'
+      exit 1
+    fi
+  fi
+fi
 
 ERR=$(gh pr merge "$PR" --"$METHOD" --match-head-commit "$EXPECTED" 2>&1)
 rc=$?
@@ -103,26 +151,21 @@ if [ $rc -ne 0 ]; then
 fi
 
 # Post-merge release (the devin-telegram 2026-11-12 version-drift
-# incident - same fix ported here, upstream ai_controller issue
-# #155): when the merge changed [project].version on the base head,
-# the release step is part of the merge operation, not a separate
-# agent duty - merges done through this wrapper can no longer land
-# untagged versions. Merges that did not bump the version produce no
-# tag on purpose (docs/fix PRs never meant a release train step).
-# Human merges via the GitHub UI are covered by the version-tag CI
-# check (tools/check_version_tag.sh + .github/workflows/
-# version-tag.yml in this repo; the canonical comment refers to the
-# upstream workflow).
-export RELEASE
+# incident - same fix ported here, issue #155): when the merge changed
+# [project].version on the base head, the release step is part of the
+# merge operation, not a separate agent duty - merges done through
+# this wrapper can no longer land untagged versions. After the
+# developer ruling of 2026-11-12 (issue #161) an unbumped shipping
+# merge is already blocked pre-merge, so a "no_version_change" result
+# here can only come from an exempted merge (non-shipping diff or
+# no-release label). Human merges via the GitHub UI are covered by the
+# version-tag CI check instead.
+export RELEASE='"skipped"'
 if ! git fetch "$REMOTE" "$BASE" >/dev/null 2>&1; then
   RELEASE='{"status":"skipped","reason":"fetch_failed"}'
 elif [ -z "$PRE_MERGE_SHA" ]; then
   RELEASE='{"status":"skipped","reason":"pre_merge_sha_unknown"}'
 else
-  VER_AT() { git show "$1:pyproject.toml" 2>/dev/null | awk -F= '
-    /^\[project\]/ {inp=1; next} /^\[/ {inp=0}
-    inp && /^[[:space:]]*version[[:space:]]*=/ {
-      v=$2; gsub(/["'"'"'[:space:]]/, "", v); print v; exit }'; }
   NEW_VER=$(VER_AT "$REMOTE/$BASE")
   OLD_VER=$(VER_AT "$PRE_MERGE_SHA")
   if [ -z "$NEW_VER" ]; then
