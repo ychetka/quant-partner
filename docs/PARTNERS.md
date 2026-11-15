@@ -90,6 +90,7 @@ Product management, UX and release consultations through the Gemini API. Product
 | `ux-architect` | Use for tool UX, interaction flows, naming, API ergonomics, error states, onboarding and operator experience. |
 | `spec-compliance-verifier` | Use to check an implementation diff against spec text and acceptance criteria; returns a strict JSON advisory artifact, never a merge decision. |
 | `release-manager` | Use to draft release notes or changelog entries from supplied change summaries and PR lists, classify the semver bump signal and flag missing changelog coverage; advisory drafts only. |
+| `software-architect` | Use for designing architectures from scratch, reviewing existing designs, distributed-systems decisions (monolith vs microservices, sync vs async, SQL vs NoSQL), NFR analysis and ADR-style decision records. |
 
 Call it when:
 
