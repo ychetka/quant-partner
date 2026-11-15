@@ -150,6 +150,40 @@ class BackendHttpTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("pageToken=next", calls[1])
 
+    def test_gemini_complete_defaults_thinking_level_high(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        payloads = []
+
+        def fake_post(url, payload, **kwargs):
+            payloads.append(payload)
+            return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            backend.complete(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high")
+
+    def test_gemini_complete_passes_explicit_thinking_level(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        payloads = []
+
+        def fake_post(url, payload, **kwargs):
+            payloads.append(payload)
+            return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            backend.complete(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={"thinking_level": "low"},
+            )
+        self.assertEqual(payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low")
+
 
 class OpenAICompatibleLiveTest(unittest.TestCase):
     """Drive OpenAICompatibleBackend against the threaded fake endpoint."""

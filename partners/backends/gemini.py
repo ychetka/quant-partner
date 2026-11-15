@@ -140,11 +140,13 @@ class GeminiBackend:
             contents.append({"role": role, "parts": [{"text": message.get("content", "")}]})
         if not contents:
             raise PartnerError("invalid_request", "messages are empty")
+        thinking_level = str(generation.get("thinking_level") or "high")
         payload: dict[str, Any] = {
             "contents": contents,
             "generationConfig": {
                 "temperature": generation.get("temperature", 0.3),
                 "maxOutputTokens": generation.get("max_tokens", 8192),
+                "thinkingConfig": {"thinkingLevel": thinking_level},
             },
         }
         if system_prompt:
