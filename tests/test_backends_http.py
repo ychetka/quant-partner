@@ -165,9 +165,7 @@ class BackendHttpTest(unittest.TestCase):
                 model="gemini-3.5-flash",
                 generation={},
             )
-        self.assertEqual(
-            payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high"
-        )
+        self.assertEqual(payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high")
 
     def test_gemini_complete_passes_explicit_thinking_level(self):
         backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
@@ -184,9 +182,7 @@ class BackendHttpTest(unittest.TestCase):
                 model="gemini-3.5-flash",
                 generation={"thinking_level": "low"},
             )
-        self.assertEqual(
-            payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low"
-        )
+        self.assertEqual(payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low")
 
 
 class OpenAICompatibleLiveTest(unittest.TestCase):
