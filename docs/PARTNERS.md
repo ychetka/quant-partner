@@ -120,6 +120,7 @@ System and software architecture advisory through the Gemini API, pinned to `gem
 | Skill | When to use |
 | --- | --- |
 | `software-architect` | Use for designing architectures from scratch, reviewing existing designs, distributed-systems decisions (monolith vs microservices, sync vs async, SQL vs NoSQL), NFR analysis and ADR-style decision records. |
+| `architecture-auditor` | Use to audit an architecture, codebase snapshot or design document for hidden defects at component boundaries, lifecycle seams and contract mismatches. Returns a numbered registry (Blocker/Major/Minor) without fixes. |
 
 Call it when:
 
@@ -128,6 +129,7 @@ Call it when:
 - You need ADR-style decision records or a Mermaid sketch of components and data flow.
 - You want over-engineering challenged: the partner argues for the simplest design that meets the requirements.
 - You need a second opinion on a design doc with facts, assumptions and hypotheses clearly separated.
+- You want a paranoid defect audit of a supplied design or code snapshot before implementation (`architecture-auditor`): numbered registry by severity, no solutions.
 
 Example:
 
@@ -374,6 +376,7 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | --- | --- | --- | --- | --- |
 | Architecture / stack trade-off | `gh-copilot-partner` | `software-architect` | `ask_partner` | System design, boundaries, decomposition |
 | NFR-first architecture consult (Gemini) | `architect-partner` | `software-architect` | `ask_partner` | Advisory second opinion on `gemini-4-carbon`, `thinking_level` high |
+| Pre-implementation defect audit | `architect-partner` | `architecture-auditor` | `ask_partner` | Paranoid audit of a caller-supplied snapshot; numbered Blocker/Major/Minor registry, no fixes |
 | Implementation plan / dependency choice | `gh-copilot-partner` | `polyglot-developer` | `ask_partner` | Language and library trade-offs |
 | Debugging strategy | `gh-copilot-partner` | `polyglot-developer` | `ask_partner` | Paste symptoms, logs and hypothesis in `question`/`context` |
 | Conversational code review | `gh-copilot-partner` | `code-reviewer` | `ask_partner` | Prose review of a pasted patch or design |

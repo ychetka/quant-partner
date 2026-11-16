@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "architecture-auditor",
+  "description": "Paranoid architecture audit of a supplied codebase snapshot or design: numbered defect registry by severity, no solutions.",
+  "when_to_use": "Use to audit an architecture, codebase snapshot or design document for hidden defects at component boundaries, lifecycle seams and contract mismatches. Returns a numbered registry (Blocker/Major/Minor) without fixes.",
+  "generation": {
+    "temperature": 0.2
+  },
+  "version": 1
+}
