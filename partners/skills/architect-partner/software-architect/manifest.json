@@ -1,0 +1,10 @@
+{
+  "_license": "Copyright (c) 2026 Alexandr Varenic / ychetka. SPDX-License-Identifier: MIT",
+  "name": "software-architect",
+  "description": "System design, architecture review, technology stack evaluation and engineering trade-off analysis.",
+  "when_to_use": "Use for designing architectures from scratch, reviewing existing designs, distributed-systems decisions (monolith vs microservices, sync vs async, SQL vs NoSQL), NFR analysis and ADR-style decision records.",
+  "generation": {
+    "temperature": 0.2
+  },
+  "version": 1
+}

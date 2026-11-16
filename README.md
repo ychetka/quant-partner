@@ -152,7 +152,7 @@ Dialog tools are stateless: pass the whole message history in each call. The opt
 
 ## Advisory business partners
 
-`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner` and `text-quality-partner` are seven enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
+`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner`, `text-quality-partner` and `architect-partner` are eight enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
 
 Capability boundaries:
 
