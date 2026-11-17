@@ -59,6 +59,34 @@
       },
       "timeout_seconds": 240
     },
+    "architect-partner": {
+      "enabled": true,
+      "toolset": "advisory",
+      "backend": "gemini",
+      "harness": "harness/architect-partner.txt",
+      "skills_root": "skills/architect-partner",
+      "default_skill": "software-architect",
+      "auth": {
+        "gemini_api_key": "GEMINI_API_KEY_HERE"
+      },
+      "options": {
+        "ipv4_only": true
+      },
+      "models": {
+        "default": "gemini-4-carbon",
+        "utility": "gemini-3.5-flash",
+        "fallback": [
+          "gemini-4-argon",
+          "gemini-3.5-flash"
+        ]
+      },
+      "generation": {
+        "temperature": 0.2,
+        "max_tokens": 8192,
+        "thinking_level": "high"
+      },
+      "timeout_seconds": 2000
+    },
     "code-reviewer": {
       "enabled": true,
       "toolset": "review",

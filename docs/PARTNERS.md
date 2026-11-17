@@ -108,6 +108,37 @@ Example:
 
 Boundary notes: advisory only. `spec-compliance-verifier` returns a strict JSON advisory artifact - never a merge decision. `prioritization` pins its own model in the manifest, so per-skill model overrides are intentional.
 
+## architect-partner
+
+System and software architecture advisory through the Gemini API, pinned to `gemini-4-carbon` with `thinking_level: "high"`. Senior principal-architect persona: leads with non-functional requirements and trade-offs, prefers the simplest architecture that satisfies the stated requirements (KISS/YAGNI) and makes uncertainty explicit.
+
+- Toolset: `advisory` - `ask_partner`, `ask_partner_v2`, `ask_partner_dialog` plus the common tools.
+- Default skill: `software-architect`.
+- Skills root: `skills/architect-partner`.
+- Model: `models.default` is `gemini-4-carbon` (fallbacks `gemini-4-argon`, `gemini-3.5-flash`); `generation.thinking_level` is `high` and `temperature` is `0.2`.
+
+| Skill | When to use |
+| --- | --- |
+| `software-architect` | Use for designing architectures from scratch, reviewing existing designs, distributed-systems decisions (monolith vs microservices, sync vs async, SQL vs NoSQL), NFR analysis and ADR-style decision records. |
+| `architecture-auditor` | Use to audit an architecture, codebase snapshot or design document for hidden defects at component boundaries, lifecycle seams and contract mismatches. Returns a numbered registry (Blocker/Major/Minor) without fixes. |
+
+Call it when:
+
+- You need an architecture designed or reviewed against stated NFRs: load, latency, availability, security, budget, team size and time-to-market.
+- You want an explicit trade-off analysis: monolith vs microservices, SQL vs NoSQL, sync vs async, with alternatives and consequences.
+- You need ADR-style decision records or a Mermaid sketch of components and data flow.
+- You want over-engineering challenged: the partner argues for the simplest design that meets the requirements.
+- You need a second opinion on a design doc with facts, assumptions and hypotheses clearly separated.
+- You want a paranoid defect audit of a supplied design or code snapshot before implementation (`architecture-auditor`): numbered registry by severity, no solutions.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": "call", "method": "tools/call", "params": {"name": "ask_partner", "arguments": {"question": "Design the ingest-and-notify pipeline for this service and record the key decisions as ADRs.", "context": "Caller-supplied NFRs: 200 RPS peak ingest, p95 notify latency under 30s, 99.9% availability target, team of 4, 6-month deadline.", "skill": "software-architect"}}}
+```
+
+Boundary notes: advisory only and fully caller-supplied - the partner never claims live access to codebases, repositories or running systems, so paste the relevant design context into `question`, `context` or `files`. It asks focused clarifying questions only when the answer would change the design.
+
 ## code-reviewer
 
 Strict advisory second-opinion review of unified diffs through the `review` toolset. Unlike the conversational partners it returns exactly one schema-valid JSON artifact per call (`status` is `ok`, `rejected` or `error`), with model provenance enforced by `strict_model` and an allowlist of model aliases instead of free-form model IDs.
@@ -344,6 +375,8 @@ Boundary notes: `options.openai.base_url` can be any host, so enabling this part
 | Question archetype | Partner | Skill | Tool | Notes |
 | --- | --- | --- | --- | --- |
 | Architecture / stack trade-off | `gh-copilot-partner` | `software-architect` | `ask_partner` | System design, boundaries, decomposition |
+| NFR-first architecture consult (Gemini) | `architect-partner` | `software-architect` | `ask_partner` | Advisory second opinion on `gemini-4-carbon`, `thinking_level` high |
+| Pre-implementation defect audit | `architect-partner` | `architecture-auditor` | `ask_partner` | Paranoid audit of a caller-supplied snapshot; numbered Blocker/Major/Minor registry, no fixes |
 | Implementation plan / dependency choice | `gh-copilot-partner` | `polyglot-developer` | `ask_partner` | Language and library trade-offs |
 | Debugging strategy | `gh-copilot-partner` | `polyglot-developer` | `ask_partner` | Paste symptoms, logs and hypothesis in `question`/`context` |
 | Conversational code review | `gh-copilot-partner` | `code-reviewer` | `ask_partner` | Prose review of a pasted patch or design |

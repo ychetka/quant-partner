@@ -150,9 +150,9 @@ The `*_v2` ask tools accept the same arguments as the base ask tools but return 
 
 Dialog tools are stateless: pass the whole message history in each call. The optional `context` argument carries a caller-supplied context/context-pack brief and is sent as a leading user turn with a `## Context` section, inserted before the message history.
 
-## Advisory business partners
+## Advisory partners
 
-`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner` and `text-quality-partner` are seven enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
+`pm-partner`, `market-partner`, `strategy-partner`, `comms-partner`, `org-partner`, `media-partner`, `text-quality-partner` and `architect-partner` are eight enabled-by-default Gemini-backed advisory instances sharing the generic `advisory` toolset. Each has its own harness contract and `skills_root`, so per-role skill packs can evolve without collisions. They answer through `ask_partner*` with prose, framework-style output rather than a strict artifact.
 
 Capability boundaries:
 

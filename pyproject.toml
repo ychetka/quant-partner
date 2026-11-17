@@ -6,6 +6,6 @@
 # the item branch before merge (see .changes/README.md).
 [project]
 name = "quant-partner"
-version = "0.2.2"
+version = "0.2.3"
 description = "Advisory partner MCP servers - stateless consultation layer for Devin sessions"
 requires-python = ">=3.11"
