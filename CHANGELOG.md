@@ -5,6 +5,32 @@ Generated from `.changes/` per-PR entries at release time by
 v0.1.33 predate the convention; see `git tag`/GitHub Releases for
 the earlier history.
 
+## [0.2.3] - 2026-11-17
+
+### User-facing
+
+_No user-visible changes._
+
+### Codebase
+
+#### ci
+- [chore] Coverage workflow gains a ratchet - a hard "Enforce coverage floor" step reads coverage.json and fails the job below COVERAGE_TOTAL_FLOOR (85), COVERAGE_HTTP_FLOOR (53) or COVERAGE_COPILOT_FLOOR (60), with a notice when the total runs more than 2 points above the floor. Why: Issue #93 - the coverage job was fully report-only (every step continue-on-error), so regressions could merge silently. A fail-closed ratchet step with per-file floors for the two coverage-debt modules keeps the signal without blocking on the known debt. (issue #93)
+
+#### docs
+- [docs] adds design spec `.devin/spec_text_gate_metric.md` for the local text-quality gate metric (partner-logprob perplexity tier with caching, multi-register corpus packs, veto + logistic composite, Pangram validation protocol, honest-capability boundaries). Why: the Shared Person internal gate measured the wrong thing (44 'Possibly human' on a Pangram-100% draft); the replacement needs a written spec before implementation, and developer decisions moved the perplexity tier to partner logprobs and made corpora multi-register. (issue #98)
+
+#### partners
+- [feat] adds a `software-architect` skill pack to `gemini-product` pinned to model `gemini-4-carbon` (fallback `gemini-4-argon`), with README updated to six packs. Why: developer wants the new Gemini 4 Carbon model for detailed software architecture consultations; a per-skill manifest model pin scopes the new model to this pack without changing gemini-product's default. (issue #101)
+- [feat] Gemini backend now sends generationConfig.thinkingConfig.thinkingLevel, defaulting to "high" and overridable via the partner generation block. Why: Partners always run thinking=high per directive; previously no thinkingConfig was sent at all so calls ran at the provider dynamic default. (issue #103)
+- [feat] adds an `architect-partner` advisory partner (harness, `software-architect` and `architecture-auditor` skill packs, config entries and PARTNERS.md section) pinned to `gemini-4-carbon` with `thinking_level` high. Why: developer wants a dedicated system-architecture partner on Gemini 4 Carbon with thinking high, analogous to gemini-product but with the advisory toolset and its own skills root. (issue #105)
+
+#### tools
+- [fix] Incident audit of unreviewed rollouts (PRs #86/#87): hardened commit-wrapper gates (forged-sentinel smuggling in both ship_commit and --diff-base paths, consume-once migration stamp, HEAD-bound roll-forward notes, NUL-safe file lists) and restored the displaced two-committee spec as controller-manager/development-cycle.md with honest harness provenance. Why: Issue #88 - PRs #86 and #87 merged without independent review. Audit found a real hygiene bypass (a multi-line commit message could forge the @@SUBJECTS_END@@ sentinel and smuggle unscanned content under a fake exempt path), a reusable migration stamp, agent-writable roll-forward waivers, and a false provenance claim in controller-manager/harness.md that left .windsurfrules references dangling. (issue #88)
+- [chore] Adopted canonical fleet quality-gate set v2 byte-for-byte from ai_controller (12 files md5-verified): hardened gate scripts now sharing migration_pattern.sh, the rebuilt agent profiles and hazards docs, plus controller-manager/harness.md and its development-cycle.md mirror. Why: Issue #90 - post-incident unification. The canonical set merges the five independent incident-audit fixes (issue #88) into the strictest implementation with 53 regression tests; local variants from PR #89 are intentionally replaced so the fleet converges on one canonical source. (issue #90)
+- [chore] Add minimal pyproject.toml ([project].version = "0.2.2") as the canonical version source consumed by repo_release.sh / repo_merge.sh, and update .changes/README.md to the version-on-branch bump model. Why: The canonical release scripts derive the release tag from [project].version on the base head and fail closed when pyproject.toml is absent - this repo had none, which broke the release path structurally (orchestrator task 302). (issue #95, orchestrator task 302)
+- [chore] Canonical fleet quality gates rollout - hazards docs, writer/reviewer/judge profiles, and commit-wrapper gates with negative tests. Why: Shared language-neutral reliability rules and mechanical enforcement (precommit re-grounding, whitelist scope, migration gate) replace drifting per-repo prompt lists; canonical source lives in ai_controller templates. (issue #84)
+- [chore] >- Sync canonical repo_merge.sh (v0.15.5): pre-merge version_not_bumped gate blocks shipping-path merges without a [project].version bump. Why: >- Developer ruling 2026-11-12 (no_version_change incident): every merged PR must bump the version unless exempt (non-shipping diff or no-release label). Ref devin-session-bridge#162.
+
 ## [0.2.0] - 2026-11-11
 
 ### User-facing
