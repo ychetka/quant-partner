@@ -85,7 +85,7 @@
         "max_tokens": 8192,
         "thinking_level": "high"
       },
-      "timeout_seconds": 240
+      "timeout_seconds": 2000
     },
     "code-reviewer": {
       "enabled": true,
