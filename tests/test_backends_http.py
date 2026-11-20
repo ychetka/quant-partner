@@ -263,7 +263,73 @@ class BackendHttpTest(unittest.TestCase):
         self.assertEqual(result.text, "chunkchunk")
         self.assertEqual(len(calls), 2)
 
-    def test_gemini_complete_stop_makes_single_call(self):
+    def test_gemini_complete_continues_on_finish_reason_max_tokens_spelling(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+        responses = iter(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "half"}]},
+                            "finishReason": "FINISH_REASON_MAX_TOKENS",
+                        }
+                    ]
+                },
+                {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "-done"}]}, "finishReason": "STOP"}
+                    ]
+                },
+            ]
+        )
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return next(responses)
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(result.text, "half-done")
+        self.assertEqual(len(calls), 2)
+
+    def test_gemini_complete_empty_chunk_max_tokens_stops_loop(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+        responses = iter(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "first"}]},
+                            "finishReason": "MAX_TOKENS",
+                        }
+                    ]
+                },
+                {"candidates": [{"content": {"parts": []}, "finishReason": "MAX_TOKENS"}]},
+            ]
+        )
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return next(responses)
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(result.text, "first")
+        self.assertEqual(len(calls), 2)
+
+    def test_gemini_complete_counts_thoughts_tokens_toward_ceiling(self):
         backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
         calls = []
 
@@ -271,8 +337,29 @@ class BackendHttpTest(unittest.TestCase):
             calls.append(url)
             return {
                 "candidates": [
-                    {"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}
-                ]
+                    {"content": {"parts": [{"text": "chunk"}]}, "finishReason": "MAX_TOKENS"}
+                ],
+                "usageMetadata": {"candidatesTokenCount": 6, "thoughtsTokenCount": 5},
+            }
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={"max_tokens": 10},
+            )
+        self.assertEqual(result.text, "chunk")
+        self.assertEqual(len(calls), 1)
+
+    def test_gemini_complete_stop_makes_single_call(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return {
+                "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}]
             }
 
         with patch("backends.gemini.post_json", side_effect=fake_post):

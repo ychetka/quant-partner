@@ -166,9 +166,7 @@ class GeminiBackend:
                 secrets=self.secrets,
             )
             candidates = out.get("candidates") or []
-            parts = (
-                ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
-            )
+            parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
             chunk = "".join(str(part.get("text", "")) for part in parts)
             full_text += chunk
             finish_reason = str(candidates[0].get("finishReason", "")) if candidates else ""
@@ -178,7 +176,8 @@ class GeminiBackend:
             if (
                 finish_reason not in ("MAX_TOKENS", "FINISH_REASON_MAX_TOKENS")
                 or continuations <= 0
-                or usage.get("candidates_tokens", 0) >= max_tokens
+                or not chunk
+                or usage.get("candidates_tokens", 0) + usage.get("thoughts_tokens", 0) >= max_tokens
             ):
                 break
             continuations -= 1
