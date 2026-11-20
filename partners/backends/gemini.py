@@ -151,16 +151,49 @@ class GeminiBackend:
         }
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
-        out = post_json(
-            f"{API_ROOT}/models/{model}:generateContent",
-            payload,
-            headers=self._headers(),
-            timeout=self.timeout,
-            secrets=self.secrets,
-        )
-        candidates = out.get("candidates") or []
-        parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
-        text = "".join(str(part.get("text", "")) for part in parts).strip()
+        full_text = ""
+        model_used = None
+        usage: dict[str, int] = {}
+        continuations = int(generation.get("max_continuations", 8))
+        max_tokens = int(generation.get("max_tokens", 8192))
+        candidates: list[dict[str, Any]] = []
+        while True:
+            out = post_json(
+                f"{API_ROOT}/models/{model}:generateContent",
+                payload,
+                headers=self._headers(),
+                timeout=self.timeout,
+                secrets=self.secrets,
+            )
+            candidates = out.get("candidates") or []
+            parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+            chunk = "".join(str(part.get("text", "")) for part in parts)
+            full_text += chunk
+            finish_reason = str(candidates[0].get("finishReason", "")) if candidates else ""
+            model_used = model_used or self._response_model(out)
+            for key, value in (self._response_usage(out) or {}).items():
+                usage[key] = usage.get(key, 0) + value
+            if (
+                finish_reason not in ("MAX_TOKENS", "FINISH_REASON_MAX_TOKENS")
+                or continuations <= 0
+                or not chunk
+                or usage.get("candidates_tokens", 0) + usage.get("thoughts_tokens", 0) >= max_tokens
+            ):
+                break
+            continuations -= 1
+            contents.append({"role": "model", "parts": [{"text": chunk}]})
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": "Continue exactly where you left off. "
+                            "Output only the continuation, no preamble, no repetition."
+                        }
+                    ],
+                }
+            )
+        text = full_text.strip()
         if not text:
             reason = (
                 candidates[0].get("finishReason", "empty response")
@@ -168,8 +201,4 @@ class GeminiBackend:
                 else "no candidates"
             )
             raise PartnerError("backend_error", f"Gemini returned an empty response ({reason})")
-        return CompletionResult(
-            text=text,
-            model_used=self._response_model(out),
-            usage=self._response_usage(out),
-        )
+        return CompletionResult(text=text, model_used=model_used, usage=usage or None)

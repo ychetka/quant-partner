@@ -184,6 +184,213 @@ class BackendHttpTest(unittest.TestCase):
             )
         self.assertEqual(payloads[0]["generationConfig"]["thinkingConfig"]["thinkingLevel"], "low")
 
+    def test_gemini_complete_continues_on_max_tokens(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        payloads = []
+        responses = iter(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "first-half "}]},
+                            "finishReason": "MAX_TOKENS",
+                        }
+                    ],
+                    "modelVersion": "models/gemini-3.5-flash",
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 20,
+                        "totalTokenCount": 30,
+                    },
+                },
+                {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "second-half"}]}, "finishReason": "STOP"}
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 40,
+                        "candidatesTokenCount": 15,
+                        "totalTokenCount": 55,
+                    },
+                },
+            ]
+        )
+
+        def fake_post(url, payload, **kwargs):
+            snapshot = dict(payload)
+            snapshot["contents"] = list(payload["contents"])
+            payloads.append(snapshot)
+            return next(responses)
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(result.text, "first-half second-half")
+        self.assertEqual(result.model_used, "gemini-3.5-flash")
+        self.assertEqual(len(payloads), 2)
+        contents = payloads[1]["contents"]
+        self.assertEqual(contents[-2], {"role": "model", "parts": [{"text": "first-half "}]})
+        self.assertEqual(contents[-1]["role"], "user")
+        self.assertIn("Continue exactly where you left off", contents[-1]["parts"][0]["text"])
+        self.assertEqual(
+            result.usage,
+            {"prompt_tokens": 50, "candidates_tokens": 35, "total_tokens": 85},
+        )
+
+    def test_gemini_complete_respects_max_continuations_cap(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return {
+                "candidates": [
+                    {"content": {"parts": [{"text": "chunk"}]}, "finishReason": "MAX_TOKENS"}
+                ]
+            }
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={"max_continuations": 1},
+            )
+        self.assertEqual(result.text, "chunkchunk")
+        self.assertEqual(len(calls), 2)
+
+    def test_gemini_complete_continues_on_finish_reason_max_tokens_spelling(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+        responses = iter(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "half"}]},
+                            "finishReason": "FINISH_REASON_MAX_TOKENS",
+                        }
+                    ]
+                },
+                {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "-done"}]}, "finishReason": "STOP"}
+                    ]
+                },
+            ]
+        )
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return next(responses)
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(result.text, "half-done")
+        self.assertEqual(len(calls), 2)
+
+    def test_gemini_complete_empty_chunk_max_tokens_stops_loop(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+        responses = iter(
+            [
+                {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "first"}]},
+                            "finishReason": "MAX_TOKENS",
+                        }
+                    ]
+                },
+                {"candidates": [{"content": {"parts": []}, "finishReason": "MAX_TOKENS"}]},
+            ]
+        )
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return next(responses)
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(result.text, "first")
+        self.assertEqual(len(calls), 2)
+
+    def test_gemini_complete_counts_thoughts_tokens_toward_ceiling(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return {
+                "candidates": [
+                    {"content": {"parts": [{"text": "chunk"}]}, "finishReason": "MAX_TOKENS"}
+                ],
+                "usageMetadata": {"candidatesTokenCount": 6, "thoughtsTokenCount": 5},
+            }
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={"max_tokens": 10},
+            )
+        self.assertEqual(result.text, "chunk")
+        self.assertEqual(len(calls), 1)
+
+    def test_gemini_complete_stop_makes_single_call(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+        calls = []
+
+        def fake_post(url, payload, **kwargs):
+            calls.append(url)
+            return {
+                "candidates": [{"content": {"parts": [{"text": "done"}]}, "finishReason": "STOP"}]
+            }
+
+        with patch("backends.gemini.post_json", side_effect=fake_post):
+            result = backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(result.text, "done")
+        self.assertEqual(len(calls), 1)
+
+    def test_gemini_complete_empty_response_still_raises(self):
+        backend = GeminiBackend({"gemini_api_key": "secret"}, {"ipv4_only": False}, 10)
+
+        def fake_post(url, payload, **kwargs):
+            return {"candidates": [{"content": {"parts": []}, "finishReason": "SAFETY"}]}
+
+        with (
+            patch("backends.gemini.post_json", side_effect=fake_post),
+            self.assertRaises(PartnerError) as ctx,
+        ):
+            backend.complete_ex(
+                [{"role": "user", "content": "ping"}],
+                system_prompt="sys",
+                model="gemini-3.5-flash",
+                generation={},
+            )
+        self.assertEqual(ctx.exception.code, "backend_error")
+        self.assertIn("SAFETY", ctx.exception.to_text())
+
 
 class OpenAICompatibleLiveTest(unittest.TestCase):
     """Drive OpenAICompatibleBackend against the threaded fake endpoint."""
